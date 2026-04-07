@@ -14,3 +14,4 @@ wheels/
 *.jsonl
 output/
 analyses/
+.env

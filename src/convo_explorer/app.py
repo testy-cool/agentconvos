@@ -87,6 +87,7 @@ class ConvoExplorer(App):
         Binding("m", "cycle_model", "Model", priority=False),
         Binding("p", "edit_prompt", "Edit prompt", priority=False),
         Binding("o", "open_folder", "Open folder", priority=False),
+        Binding("escape", "cancel", "Cancel", priority=True),
     ]
 
     TITLE = "convo-explorer"
@@ -101,6 +102,8 @@ class ConvoExplorer(App):
         self.custom_single_prompt: str = SINGLE_PROMPT
         self.custom_multi_prompt: str = MULTI_PROMPT
         self._editing_prompt: str = "single"  # which prompt is being edited
+        self._analyzing = False
+        self._last_action: str = ""  # "analysis" or "export"
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -465,6 +468,7 @@ class ConvoExplorer(App):
         out_path = out_dir / f"{name}_{ts}.md"
         out_path.write_text(md, encoding="utf-8")
         self.call_from_thread(self.notify, f"Exported to {out_path}")
+        self._last_action = "export"
 
     @work(thread=True)
     def do_export_multi(self, nodes: list[NodeData]) -> None:
@@ -479,6 +483,7 @@ class ConvoExplorer(App):
             out_path = out_dir / f"{name}_{ts}.md"
             out_path.write_text(md, encoding="utf-8")
         self.call_from_thread(self.notify, f"Exported {len(nodes)} conversations to output/")
+        self._last_action = "export"
 
     def action_export_concat(self) -> None:
         selected = self._get_selected_nodes()
@@ -508,13 +513,18 @@ class ConvoExplorer(App):
         out_path = out_dir / f"{ts}-{proj}-{len(nodes)}-convos-combined.md"
         out_path.write_text(combined, encoding="utf-8")
         self.call_from_thread(self.notify, f"Combined export: {out_path}")
+        self._last_action = "export"
         self.call_from_thread(self._set_preview, f"## Exported {len(nodes)} conversations\n\nSaved to `{out_path}`\n\nSize: {len(combined):,} chars (~{len(combined)//4:,} tokens)", 0)
 
     def action_open_folder(self) -> None:
-        """Open the exports/analyses folder in the system file explorer."""
+        """Open the relevant folder based on last action."""
         import subprocess
-        exports = ANALYSES_DIR.parent / "exports"
-        folder = exports if exports.is_dir() else ANALYSES_DIR
+        if self._last_action == "analysis":
+            folder = ANALYSES_DIR
+        elif self._last_action == "export":
+            folder = ANALYSES_DIR.parent / "exports"
+        else:
+            folder = ANALYSES_DIR.parent  # show both
         folder.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["explorer", str(folder)])
 
@@ -532,6 +542,9 @@ class ConvoExplorer(App):
         return True
 
     def action_analyze(self) -> None:
+        if self._analyzing:
+            self.notify("Analysis already running — Esc to cancel", severity="warning")
+            return
         if not self._check_gemini():
             return
         selected = self._get_selected_nodes()
@@ -543,50 +556,91 @@ class ConvoExplorer(App):
         else:
             self.notify("Select conversation(s) first", severity="warning")
 
-    @work(thread=True)
+    def _start_analysis(self, label: str) -> None:
+        self._analyzing = True
+        self.query_one("#right-title", Static).update(f"ANALYZING: {label}...")
+        self._set_preview("## Analysis in progress...\n\nPress **Esc** to cancel.", 0)
+
+    def _finish_analysis(self) -> None:
+        self._analyzing = False
+        self._last_action = "analysis"
+
+    def _cancel_analysis(self) -> None:
+        # Cancel all running workers
+        for worker in self.workers:
+            if not worker.is_finished:
+                worker.cancel()
+        self._analyzing = False
+        self.query_one("#right-title", Static).update("PREVIEW")
+        self._set_preview("*Analysis cancelled.*", 0)
+        self.notify("Analysis cancelled")
+
+    @work(thread=True, exit_on_error=False)
     def do_analyze_single(self, meta: ConversationMeta, model: str = DEFAULT_MODEL) -> None:
-        self.call_from_thread(self.notify, f"Analyzing with {model}...")
+        name = meta.slug or meta.uuid[:8]
+        self.call_from_thread(self._start_analysis, f"{name} via {model}")
         try:
             from .analyzer import analyze_single
             turns = parse_jsonl(meta.path)
+            if not self._analyzing:
+                return
             result = analyze_single(turns, model=model, prompt_template=self.custom_single_prompt)
+            if not self._analyzing:
+                return
 
-            # Save
             ANALYSES_DIR.mkdir(parents=True, exist_ok=True)
             proj = Path(meta.cwd).name if meta.cwd else "unknown"
             path = ANALYSES_DIR / _analysis_filename(proj, 1)
             path.write_text(result, encoding="utf-8")
 
-            header = f"## Analysis: {meta.slug or meta.uuid}\n*Saved to {path}*\n\n---\n\n"
+            header = f"## Analysis: {name}\n*Saved to {path}*\n\n---\n\n"
             self.call_from_thread(self._set_preview, header + result, 0)
             self.call_from_thread(
                 lambda: self.query_one("#right-title", Static).update("GEMINI ANALYSIS")
             )
             self.call_from_thread(self._refresh_analyzed_markers)
         except Exception as e:
+            if not self._analyzing:
+                return
             import traceback
             tb = traceback.format_exc()
             self.call_from_thread(self._set_preview, f"## Analysis Error\n\n```\n{tb}\n```", 0)
             self.call_from_thread(self.notify, f"Analysis failed: {e}", severity="error")
+        finally:
+            self.call_from_thread(self._finish_analysis)
 
-    @work(thread=True)
+    @work(thread=True, exit_on_error=False)
     def do_analyze_multi(self, nodes: list[NodeData], model: str = DEFAULT_MODEL) -> None:
         count = len(nodes)
-        self.call_from_thread(self.notify, f"Analyzing {count} conversations with {model}...")
+        self.call_from_thread(self._start_analysis, f"{count} convos via {model}")
         try:
             from .analyzer import analyze_multi
             conversations = []
-            for nd in nodes:
+            for i, nd in enumerate(nodes):
+                if not self._analyzing:
+                    return
                 meta = nd.meta
                 label = f"{meta.slug or meta.uuid[:8]} ({meta.timestamp[:10]})"
                 turns = parse_jsonl(meta.path)
                 conversations.append((label, turns))
+                self.call_from_thread(
+                    lambda i=i: self.query_one("#right-title", Static).update(
+                        f"ANALYZING: loading {i+1}/{count}..."
+                    )
+                )
 
+            if not self._analyzing:
+                return
+            self.call_from_thread(
+                lambda: self.query_one("#right-title", Static).update(
+                    f"ANALYZING: waiting for Gemini ({count} convos)..."
+                )
+            )
             result = analyze_multi(conversations, model=model, prompt_template=self.custom_multi_prompt)
+            if not self._analyzing:
+                return
 
-            # Save
             ANALYSES_DIR.mkdir(parents=True, exist_ok=True)
-            # Derive project name from first convo's cwd
             first_meta = nodes[0].meta
             proj = Path(first_meta.cwd).name if first_meta and first_meta.cwd else "mixed"
             path = ANALYSES_DIR / _analysis_filename(proj, count)
@@ -599,10 +653,23 @@ class ConvoExplorer(App):
             )
             self.call_from_thread(self._refresh_analyzed_markers)
         except Exception as e:
+            if not self._analyzing:
+                return
             import traceback
             tb = traceback.format_exc()
             self.call_from_thread(self._set_preview, f"## Analysis Error\n\n```\n{tb}\n```", 0)
             self.call_from_thread(self.notify, f"Analysis failed: {e}", severity="error")
+        finally:
+            self.call_from_thread(self._finish_analysis)
+
+    def action_cancel(self) -> None:
+        if self._analyzing:
+            self._cancel_analysis()
+        else:
+            # Clear filter if active
+            filt = self.query_one("#filter-input", Input)
+            if filt.value:
+                filt.value = ""
 
     def action_quit(self) -> None:
         self.exit()

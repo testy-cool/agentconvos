@@ -45,7 +45,30 @@ CONVERSATIONS:
 {content}"""
 
 
+def _load_env():
+    """Load GEMINI_API_KEY from .env files if not already set."""
+    if os.environ.get("GEMINI_API_KEY"):
+        return
+    # Check .env in cwd, then ~/.claude/convo-explorer/.env
+    candidates = [
+        Path(".env"),
+        Path(os.environ.get("USERPROFILE", Path.home())) / ".claude" / "convo-explorer" / ".env",
+    ]
+    for env_path in candidates:
+        if env_path.is_file():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key, val = key.strip(), val.strip().strip("'\"")
+                if key == "GEMINI_API_KEY" and val:
+                    os.environ["GEMINI_API_KEY"] = val
+                    return
+
+
 def gemini_available() -> bool:
+    _load_env()
     return bool(os.environ.get("GEMINI_API_KEY"))
 
 

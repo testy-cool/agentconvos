@@ -78,7 +78,8 @@ uv run convo-explorer
 | `A` | Analyze with Gemini |
 | `M` | Cycle Gemini model |
 | `P` | Edit analysis prompt |
-| `O` | Open exports folder |
+| `O` | Open exports/analyses folder |
+| `Esc` | Cancel running analysis |
 | `Tab` | Switch focus between sidebar and preview |
 | `Q` | Quit |
 
@@ -98,7 +99,29 @@ uv run convo-explorer --analyze path/to/session.jsonl --model gemini-3.1-pro-pre
 
 ## Gemini Analysis
 
-Set `GEMINI_API_KEY` as an environment variable to enable AI-powered analysis. Analysis extracts:
+Set your Gemini API key using any of these methods:
+
+**Option 1: `.env` file (recommended for Windows)**
+```bash
+# Create in project directory or ~/.claude/convo-explorer/.env
+echo GEMINI_API_KEY=your-key-here > .env
+```
+
+**Option 2: Environment variable**
+```bash
+# Linux/macOS
+export GEMINI_API_KEY=your-key-here
+
+# Windows (PowerShell)
+$env:GEMINI_API_KEY="your-key-here"
+
+# Windows (CMD)
+set GEMINI_API_KEY=your-key-here
+```
+
+Get a free API key at [aistudio.google.com](https://aistudio.google.com/apikey).
+
+Analysis extracts:
 
 - Key decisions and their rationale
 - User preferences and workflow patterns
