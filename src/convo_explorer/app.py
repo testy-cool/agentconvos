@@ -24,7 +24,7 @@ from textual.widgets import (
 from textual.widgets.tree import TreeNode
 
 from .scanner import Project, scan_projects
-from .parser import ConversationMeta, parse_jsonl, to_markdown
+from .parser import ConversationMeta, parse_jsonl, to_markdown, get_stats, DETAIL_TEXT, DETAIL_TOOLS, DETAIL_RESULTS, DETAIL_FULL
 from .analyzer import MODELS, DEFAULT_MODEL, SINGLE_PROMPT, MULTI_PROMPT
 
 
@@ -682,6 +682,7 @@ def main() -> None:
     parser.add_argument("--concat", nargs="+", metavar="ID_OR_PATH", help="Export concatenated markdown (JSONL paths, UUIDs, or slugs)")
     parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL, help="Gemini model")
     parser.add_argument("--prompt", metavar="TEXT_OR_FILE", help="Custom analysis prompt (inline text or path to .txt/.md file). Use {content} as placeholder for conversation text, {count} for multi-convo count.")
+    parser.add_argument("--detail", choices=["text", "tools", "results", "full"], default="text", help="Detail level: text (default), tools (+tool calls), results (+truncated output), full (+everything)")
     parser.add_argument("--list", action="store_true", help="List all projects and conversations")
     args = parser.parse_args()
 
@@ -692,7 +693,9 @@ def main() -> None:
             for c in p.conversations:
                 ts = c.timestamp[:10] if c.timestamp else "?"
                 name = c.slug or c.uuid[:8]
-                print(f"  {ts}  {name}  {c.preview[:60]}")
+                size = c.path.stat().st_size if c.path.exists() else 0
+                size_kb = f"{size // 1024}KB"
+                print(f"  {ts}  {name:30s}  {size_kb:>6s}  {c.preview[:50]}")
         return
 
     if args.concat:
@@ -702,8 +705,9 @@ def main() -> None:
         for p in paths:
             from .parser import get_meta
             meta = get_meta(p)
-            turns = parse_jsonl(p)
-            md = to_markdown(turns)
+            turns = parse_jsonl(p, detail=args.detail)
+            stats = get_stats(p)
+            md = to_markdown(turns, stats=stats)
             name = (meta.slug or meta.uuid[:8]) if meta else p.stem[:12]
             ts = (meta.timestamp[:10]) if meta else "?"
             cwd = meta.cwd if meta else "?"
@@ -738,7 +742,7 @@ def main() -> None:
 
         paths = _resolve_args(args.analyze)
         if len(paths) == 1:
-            turns = parse_jsonl(paths[0])
+            turns = parse_jsonl(paths[0], detail=args.detail)
             prompt = custom_prompt or SINGLE_PROMPT
             result = analyze_single(turns, model=args.model, prompt_template=prompt)
         else:
@@ -746,7 +750,7 @@ def main() -> None:
             for p in paths:
                 meta = from_path_meta(p)
                 label = meta or p.stem[:12]
-                turns = parse_jsonl(p)
+                turns = parse_jsonl(p, detail=args.detail)
                 convos.append((label, turns))
             prompt = custom_prompt or MULTI_PROMPT
             result = analyze_multi(convos, model=args.model, prompt_template=prompt)

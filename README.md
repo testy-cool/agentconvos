@@ -107,7 +107,23 @@ uv run convo-explorer --analyze 315ce5 --prompt "List all tools used.\n\n{conten
 
 # Custom analysis prompt (from file)
 uv run convo-explorer --analyze 315ce5 --prompt my-prompt.txt
+
+# Detail levels: text (default), tools, results, full
+uv run convo-explorer --concat 315ce5 --detail tools     # +tool call summaries
+uv run convo-explorer --concat 315ce5 --detail results   # +truncated tool output
+uv run convo-explorer --concat 315ce5 --detail full       # +everything untruncated
 ```
+
+#### Detail levels
+
+| Level | What's included | Typical overhead |
+|-------|----------------|-----------------|
+| `text` | User/assistant text only | baseline |
+| `tools` | + tool call summaries (Bash commands, file edits, greps) | +20-30% |
+| `results` | + truncated tool output (500 chars each) | +80-100% |
+| `full` | + full untruncated tool output | +300-2000% |
+
+Exports also include a stats header: model, token count, duration, tool calls, and estimated cost.
 
 ## Gemini Analysis
 
