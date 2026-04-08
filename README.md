@@ -101,6 +101,12 @@ uv run convo-explorer --concat reflective-herding-biscuit
 # Mix IDs and paths, analyze multiple at once
 export GEMINI_API_KEY=your-key-here
 uv run convo-explorer --analyze 315ce5 reflective-herding --model gemini-3.1-pro-preview
+
+# Custom analysis prompt (inline)
+uv run convo-explorer --analyze 315ce5 --prompt "List all tools used.\n\n{content}"
+
+# Custom analysis prompt (from file)
+uv run convo-explorer --analyze 315ce5 --prompt my-prompt.txt
 ```
 
 ## Gemini Analysis
