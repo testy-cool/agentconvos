@@ -86,15 +86,21 @@ uv run convo-explorer
 ### CLI (headless)
 
 ```bash
-# List all projects and conversations
+# List all projects and conversations (shows UUIDs and slugs)
 uv run convo-explorer --list
 
-# Export concatenated markdown (for use with other tools)
-uv run convo-explorer --concat path/to/session.jsonl [more files...]
+# Export by file path
+uv run convo-explorer --concat path/to/session.jsonl
 
-# Analyze with Gemini
+# Export by UUID prefix (just enough chars to be unique)
+uv run convo-explorer --concat 315ce500
+
+# Export by conversation slug
+uv run convo-explorer --concat reflective-herding-biscuit
+
+# Mix IDs and paths, analyze multiple at once
 export GEMINI_API_KEY=your-key-here
-uv run convo-explorer --analyze path/to/session.jsonl --model gemini-3.1-pro-preview
+uv run convo-explorer --analyze 315ce5 reflective-herding --model gemini-3.1-pro-preview
 ```
 
 ## Gemini Analysis

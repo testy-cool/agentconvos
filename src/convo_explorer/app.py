@@ -678,8 +678,8 @@ class ConvoExplorer(App):
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Browse and analyze Claude Code conversations")
-    parser.add_argument("--analyze", nargs="+", metavar="JSONL", help="Analyze specific .jsonl file(s) with Gemini")
-    parser.add_argument("--concat", nargs="+", metavar="JSONL", help="Export concatenated markdown from .jsonl file(s)")
+    parser.add_argument("--analyze", nargs="+", metavar="ID_OR_PATH", help="Analyze conversations (JSONL paths, UUIDs, or slugs)")
+    parser.add_argument("--concat", nargs="+", metavar="ID_OR_PATH", help="Export concatenated markdown (JSONL paths, UUIDs, or slugs)")
     parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL, help="Gemini model")
     parser.add_argument("--list", action="store_true", help="List all projects and conversations")
     args = parser.parse_args()
@@ -696,7 +696,7 @@ def main() -> None:
 
     if args.concat:
         from pathlib import Path as P
-        paths = [P(f) for f in args.concat]
+        paths = _resolve_args(args.concat)
         parts = []
         for p in paths:
             from .parser import get_meta
@@ -720,11 +720,10 @@ def main() -> None:
 
     if args.analyze:
         from .analyzer import gemini_available, analyze_single, analyze_multi
-        from pathlib import Path as P
         if not gemini_available():
             print("Error: set GEMINI_API_KEY env var")
             return
-        paths = [P(f) for f in args.analyze]
+        paths = _resolve_args(args.analyze)
         if len(paths) == 1:
             turns = parse_jsonl(paths[0])
             result = analyze_single(turns, model=args.model)
@@ -749,6 +748,27 @@ def main() -> None:
 
     app = ConvoExplorer()
     app.run()
+
+
+def _resolve_args(args: list[str]) -> list:
+    """Resolve a mix of file paths and conversation IDs to Path objects."""
+    from pathlib import Path as P
+    file_paths = []
+    ids_to_resolve = []
+    for arg in args:
+        p = P(arg)
+        if p.exists() and p.suffix == ".jsonl":
+            file_paths.append(p)
+        else:
+            ids_to_resolve.append(arg)
+    if ids_to_resolve:
+        from .scanner import resolve_ids
+        file_paths.extend(resolve_ids(ids_to_resolve))
+    if not file_paths:
+        print("Error: no conversations found for the given arguments")
+        import sys
+        sys.exit(1)
+    return file_paths
 
 
 def from_path_meta(path):

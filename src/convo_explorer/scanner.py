@@ -77,3 +77,33 @@ def scan_projects() -> list[Project]:
         reverse=True,
     )
     return projects
+
+
+def resolve_ids(ids: list[str]) -> list[Path]:
+    """Resolve conversation IDs (UUID prefix or slug) to JSONL file paths.
+
+    Matches against uuid (prefix match) and slug (exact or substring).
+    Returns list of resolved paths. Prints warnings for unresolved IDs.
+    """
+    projects = scan_projects()
+    all_convos = [c for p in projects for c in p.conversations]
+
+    resolved = []
+    for query in ids:
+        q = query.lower().strip()
+        # Try exact UUID prefix match first
+        matches = [c for c in all_convos if c.uuid.lower().startswith(q)]
+        if not matches:
+            # Try slug match (exact or substring)
+            matches = [c for c in all_convos if c.slug and q in c.slug.lower()]
+        if not matches:
+            print(f"Warning: no conversation found for '{query}'")
+        elif len(matches) > 1:
+            print(f"Warning: '{query}' matches {len(matches)} conversations, using all:")
+            for m in matches:
+                name = m.slug or m.uuid[:8]
+                print(f"  {m.timestamp[:10]}  {name}  {m.cwd}")
+            resolved.extend(m.path for m in matches)
+        else:
+            resolved.append(matches[0].path)
+    return resolved
