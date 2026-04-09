@@ -741,10 +741,11 @@ def main() -> None:
                 custom_prompt += "\n\nCONVERSATION:\n{content}"
 
         paths = _resolve_args(args.analyze)
+        def _progress(msg): print(f"  {msg}", flush=True)
         if len(paths) == 1:
             turns = parse_jsonl(paths[0], detail=args.detail)
             prompt = custom_prompt or SINGLE_PROMPT
-            result = analyze_single(turns, model=args.model, prompt_template=prompt)
+            result = analyze_single(turns, model=args.model, prompt_template=prompt, on_progress=_progress)
         else:
             convos = []
             for p in paths:
@@ -753,7 +754,7 @@ def main() -> None:
                 turns = parse_jsonl(p, detail=args.detail)
                 convos.append((label, turns))
             prompt = custom_prompt or MULTI_PROMPT
-            result = analyze_multi(convos, model=args.model, prompt_template=prompt)
+            result = analyze_multi(convos, model=args.model, prompt_template=prompt, on_progress=_progress)
 
         # Save and print
         ANALYSES_DIR.mkdir(parents=True, exist_ok=True)
