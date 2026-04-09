@@ -207,19 +207,26 @@ def get_cost_summary() -> str:
     return _tracker.summary()
 
 
-def _call_gemini(client, model: str, prompt: str, retries: int = 2) -> str:
-    """Single Gemini API call with retry on empty response."""
+def _call_gemini(client, model: str, prompt: str, retries: int = 3) -> str:
+    """Single Gemini API call with retry on empty response or API error."""
+    import time
     for attempt in range(retries + 1):
-        response = client.models.generate_content(model=model, contents=prompt)
-        # Track usage
-        usage = getattr(response, "usage_metadata", None)
-        if usage:
-            _tracker.record(model, getattr(usage, "prompt_token_count", 0) or 0, getattr(usage, "candidates_token_count", 0) or 0)
-        text = response.text or ""
-        if text.strip():
-            return text
+        try:
+            response = client.models.generate_content(model=model, contents=prompt)
+            usage = getattr(response, "usage_metadata", None)
+            if usage:
+                _tracker.record(model, getattr(usage, "prompt_token_count", 0) or 0, getattr(usage, "candidates_token_count", 0) or 0)
+            text = response.text or ""
+            if text.strip():
+                return text
+        except Exception as e:
+            if attempt < retries:
+                wait = 5 * (attempt + 1)
+                print(f"  API error: {e} — retrying in {wait}s ({attempt + 1}/{retries})", flush=True)
+                time.sleep(wait)
+                continue
+            raise
         if attempt < retries:
-            import time
             time.sleep(2)
     return text
 
