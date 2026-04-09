@@ -682,11 +682,13 @@ def main() -> None:
     parser.add_argument("--concat", nargs="+", metavar="ID_OR_PATH", help="Export concatenated markdown (JSONL paths, UUIDs, or slugs)")
     parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL, help="Gemini model")
     parser.add_argument("--prompt", metavar="TEXT_OR_FILE", help="Custom analysis prompt (inline text or path to .txt/.md file). Use {content} as placeholder for conversation text, {count} for multi-convo count.")
-    parser.add_argument("--detail", choices=["text", "tools", "results", "full"], default="text", help="Detail level: text (default), tools (+tool calls), results (+truncated output), full (+everything)")
+    parser.add_argument("--detail", choices=["text", "tools", "results", "full"], default=None, help="Detail level: text, tools, results (default for analyze), full")
     parser.add_argument("--list", action="store_true", help="List all projects and conversations")
     parser.add_argument("--show", nargs="+", metavar="ID_OR_PATH", help="Preview conversation (first ~10K words)")
     parser.add_argument("--open", action="store_true", help="Open in Sublime Text (use with --show or --concat)")
     args = parser.parse_args()
+    if args.detail is None:
+        args.detail = "results" if args.analyze else "text"
 
     if args.list:
         from .scanner import scan_projects

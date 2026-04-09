@@ -217,8 +217,10 @@ def parse_jsonl(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
                         if include_results and tool_id in tool_results:
                             result = tool_results[tool_id]
                             if result:
-                                if truncate_results and len(result) > RESULT_TRUNCATE:
-                                    result = result[:RESULT_TRUNCATE] + f"... ({len(result):,} chars)"
+                                if truncate_results and len(result) > RESULT_TRUNCATE * 2:
+                                    head = result[:RESULT_TRUNCATE]
+                                    tail = result[-RESULT_TRUNCATE:]
+                                    result = f"{head}\n... ({len(result):,} chars total) ...\n{tail}"
                                 tool_line += f"\n> ```\n> {result}\n> ```"
                         parts.append(tool_line)
 
