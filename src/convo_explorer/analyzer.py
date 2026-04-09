@@ -19,6 +19,11 @@ DEFAULT_MODEL = MODELS[0]
 CHUNK_THRESHOLD_CHARS = 1_200_000
 CHUNK_TARGET_CHARS = 1_200_000
 
+# Deep mode: ~100K tokens = ~400K chars per chunk
+DEEP_CHUNK_TARGET_CHARS = 400_000
+DEEP_PRO_MODEL = "gemini-3.1-pro-preview"
+DEEP_FLASH_MODEL = "gemini-3-flash-preview"
+
 SINGLE_PROMPT = """Analyze this Claude Code conversation and extract:
 
 1. **Key Decisions** — technical choices made and why
@@ -63,6 +68,44 @@ Resolve any contradictions between parts (later parts override earlier ones).
 Output as structured markdown.
 
 PART ANALYSES:
+{content}"""
+
+DEEP_FIRST_PROMPT = """You are doing an exhaustive, code-level analysis of a Claude Code conversation.
+This is CHUNK 1 of {total_chunks}. You are setting the standard — be extremely thorough and detailed.
+
+Include:
+- Exact file paths, function names, class names
+- Code snippets and command outputs where relevant
+- Specific technical decisions with reasoning
+- Problems encountered with full error context
+- User preferences and corrections (exact quotes)
+- Workflow patterns observed
+
+Output as richly structured markdown with code blocks. Do NOT summarize — be exhaustive.
+
+CONVERSATION (chunk 1/{total_chunks}):
+{content}"""
+
+DEEP_CONTINUE_PROMPT = """You are continuing an exhaustive, code-level analysis of a Claude Code conversation.
+This is CHUNK {chunk_num} of {total_chunks}.
+
+Here is the analysis from the previous chunks — continue at the same level of detail and format:
+
+PREVIOUS ANALYSIS:
+{previous}
+
+---
+
+Now analyze this next chunk. Continue where the previous analysis left off. Add new findings, don't repeat what's already covered. Maintain the same structure and depth.
+
+CONVERSATION (chunk {chunk_num}/{total_chunks}):
+{content}"""
+
+DEEP_FINAL_PROMPT = """Below is a sequential, exhaustive analysis of a Claude Code conversation done in {total_chunks} passes.
+
+Compile this into one cohesive, detailed document. Preserve all code snippets, file paths, function names, and technical details. Organize chronologically and by topic. Remove only exact duplicates — keep everything else.
+
+SEQUENTIAL ANALYSIS:
 {content}"""
 
 MULTI_PROMPT = """Analyze these {count} Claude Code conversations together and find cross-session patterns:
@@ -172,6 +215,62 @@ def analyze_single(
     combined = "\n\n---\n\n".join(chunk_analyses)
     synth_prompt = SYNTHESIS_PROMPT.replace("{total_chunks}", str(total)).replace("{content}", combined)
     return _call_gemini(client, model, synth_prompt)
+
+
+def analyze_deep(
+    turns: list[Turn],
+    on_progress: callable = None,
+    prompt_template: str | None = None,
+) -> str:
+    """Deep sequential analysis: pro for first chunk, flash continues with prior context."""
+    from google import genai
+
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    chunks = _chunk_turns(turns, target_chars=DEEP_CHUNK_TARGET_CHARS)
+    total = len(chunks)
+
+    if total == 1:
+        # Small enough for one pro pass
+        if on_progress:
+            on_progress(f"Single chunk — analyzing with {DEEP_PRO_MODEL}")
+        content = to_markdown(chunks[0])
+        prompt = (prompt_template or DEEP_FIRST_PROMPT).replace("{total_chunks}", "1").replace("{content}", content)
+        return _call_gemini(client, DEEP_PRO_MODEL, prompt)
+
+    if on_progress:
+        on_progress(f"Deep mode: {total} chunks (~100K tokens each). Pro for chunk 1, Flash for 2-{total}, Pro for final synthesis.")
+
+    # Chunk 1: Pro sets the tone
+    if on_progress:
+        on_progress(f"Chunk 1/{total} with {DEEP_PRO_MODEL} (setting the standard)...")
+    chunk_md = to_markdown(chunks[0])
+    prompt = DEEP_FIRST_PROMPT.replace("{total_chunks}", str(total)).replace("{content}", chunk_md)
+    running_analysis = _call_gemini(client, DEEP_PRO_MODEL, prompt)
+    all_analyses = [f"## Chunk 1/{total}\n\n{running_analysis}"]
+
+    # Chunks 2..N: Flash continues with previous analysis as context
+    for i, chunk_turns in enumerate(chunks[1:], 2):
+        if on_progress:
+            on_progress(f"Chunk {i}/{total} with {DEEP_FLASH_MODEL} (continuing with prior context)...")
+        chunk_md = to_markdown(chunk_turns)
+        # Include running analysis but cap it to avoid blowing context
+        prev_context = running_analysis
+        if len(prev_context) > 200_000:
+            prev_context = prev_context[-200_000:]
+        prompt = DEEP_CONTINUE_PROMPT.replace("{chunk_num}", str(i)).replace("{total_chunks}", str(total)).replace("{previous}", prev_context).replace("{content}", chunk_md)
+        result = _call_gemini(client, DEEP_FLASH_MODEL, prompt)
+        running_analysis = result
+        all_analyses.append(f"## Chunk {i}/{total}\n\n{result}")
+
+    # Final synthesis with Pro
+    if on_progress:
+        on_progress(f"Final synthesis with {DEEP_PRO_MODEL}...")
+    combined = "\n\n---\n\n".join(all_analyses)
+    # If combined is too big for one pass, just use the last running analysis
+    if len(combined) > CHUNK_THRESHOLD_CHARS:
+        combined = combined[:CHUNK_THRESHOLD_CHARS]
+    synth_prompt = DEEP_FINAL_PROMPT.replace("{total_chunks}", str(total)).replace("{content}", combined)
+    return _call_gemini(client, DEEP_PRO_MODEL, synth_prompt)
 
 
 def analyze_multi(

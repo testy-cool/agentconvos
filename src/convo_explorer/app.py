@@ -683,12 +683,14 @@ def main() -> None:
     parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL, help="Gemini model")
     parser.add_argument("--prompt", metavar="TEXT_OR_FILE", help="Custom analysis prompt (inline text or path to .txt/.md file). Use {content} as placeholder for conversation text, {count} for multi-convo count.")
     parser.add_argument("--detail", choices=["text", "tools", "results", "full"], default=None, help="Detail level: text, tools, results (default for analyze), full")
+    parser.add_argument("--deep", nargs="+", metavar="ID_OR_PATH", help="Deep analysis: Pro for first chunk, Flash continues with context, Pro synthesizes. Uses full detail.")
     parser.add_argument("--list", action="store_true", help="List all projects and conversations")
     parser.add_argument("--show", nargs="+", metavar="ID_OR_PATH", help="Preview conversation (first ~10K words)")
     parser.add_argument("--open", action="store_true", help="Open in Sublime Text (use with --show or --concat)")
     args = parser.parse_args()
     if args.detail is None:
-        args.detail = "results" if args.analyze else "text"
+        args.detail = "full" if args.deep else ("results" if args.analyze else "text")
+
 
     if args.list:
         from .scanner import scan_projects
@@ -753,8 +755,8 @@ def main() -> None:
             _open_in_editor(out_path)
         return
 
-    if args.analyze:
-        from .analyzer import gemini_available, analyze_single, analyze_multi, SINGLE_PROMPT, MULTI_PROMPT
+    if args.analyze or args.deep:
+        from .analyzer import gemini_available, analyze_single, analyze_multi, analyze_deep, SINGLE_PROMPT, MULTI_PROMPT
         if not gemini_available():
             print("Error: set GEMINI_API_KEY env var")
             return
@@ -770,9 +772,17 @@ def main() -> None:
             if "{content}" not in custom_prompt:
                 custom_prompt += "\n\nCONVERSATION:\n{content}"
 
-        paths = _resolve_args(args.analyze)
+        analyze_ids = args.deep or args.analyze
+        paths = _resolve_args(analyze_ids)
         def _progress(msg): print(f"  {msg}", flush=True)
-        if len(paths) == 1:
+
+        if args.deep:
+            # Deep mode: sequential pro→flash→pro analysis
+            all_turns = []
+            for p in paths:
+                all_turns.extend(parse_jsonl(p, detail=args.detail))
+            result = analyze_deep(all_turns, on_progress=_progress, prompt_template=custom_prompt)
+        elif len(paths) == 1:
             turns = parse_jsonl(paths[0], detail=args.detail)
             prompt = custom_prompt or SINGLE_PROMPT
             result = analyze_single(turns, model=args.model, prompt_template=prompt, on_progress=_progress)
