@@ -214,7 +214,7 @@ def _call_gemini(client, model: str, prompt: str, retries: int = 2) -> str:
         # Track usage
         usage = getattr(response, "usage_metadata", None)
         if usage:
-            _tracker.record(model, getattr(usage, "prompt_token_count", 0), getattr(usage, "candidates_token_count", 0))
+            _tracker.record(model, getattr(usage, "prompt_token_count", 0) or 0, getattr(usage, "candidates_token_count", 0) or 0)
         text = response.text or ""
         if text.strip():
             return text
