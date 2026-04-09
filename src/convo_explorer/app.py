@@ -776,12 +776,17 @@ def main() -> None:
         paths = _resolve_args(analyze_ids)
         def _progress(msg): print(f"  {msg}", flush=True)
 
+        # Pre-compute output path so deep mode can save progress
+        ANALYSES_DIR.mkdir(parents=True, exist_ok=True)
+        proj = paths[0].parent.name.split("--")[-1].replace("-", " ").strip() or "cli"
+        out_path = ANALYSES_DIR / _analysis_filename(proj, len(paths))
+
         if args.deep:
             # Deep mode: sequential pro→flash→pro analysis
             all_turns = []
             for p in paths:
                 all_turns.extend(parse_jsonl(p, detail=args.detail))
-            result = analyze_deep(all_turns, on_progress=_progress, prompt_template=custom_prompt)
+            result = analyze_deep(all_turns, on_progress=_progress, prompt_template=custom_prompt, out_path=out_path)
         elif len(paths) == 1:
             turns = parse_jsonl(paths[0], detail=args.detail)
             prompt = custom_prompt or SINGLE_PROMPT
@@ -797,10 +802,6 @@ def main() -> None:
             result = analyze_multi(convos, model=args.model, prompt_template=prompt, on_progress=_progress)
 
         # Save and print
-        ANALYSES_DIR.mkdir(parents=True, exist_ok=True)
-        # Derive project from parent folder name
-        proj = paths[0].parent.name.split("--")[-1].replace("-", " ").strip() or "cli"
-        out_path = ANALYSES_DIR / _analysis_filename(proj, len(paths))
         out_path.write_text(result, encoding="utf-8")
         print(result)
         print(f"\n--- Saved to {out_path} ---")

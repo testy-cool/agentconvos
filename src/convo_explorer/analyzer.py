@@ -277,6 +277,7 @@ def analyze_deep(
     turns: list[Turn],
     on_progress: callable = None,
     prompt_template: str | None = None,
+    out_path: Path | None = None,
 ) -> str:
     """Deep sequential analysis: pro for first chunk, flash continues with prior context."""
     global _tracker
@@ -287,13 +288,18 @@ def analyze_deep(
     chunks = _chunk_turns(turns, target_chars=DEEP_CHUNK_TARGET_CHARS)
     total = len(chunks)
 
+    def _save_progress(text: str):
+        if out_path:
+            out_path.write_text(text, encoding="utf-8")
+
     if total == 1:
-        # Small enough for one pro pass
         if on_progress:
             on_progress(f"Single chunk — analyzing with {DEEP_PRO_MODEL}")
         content = to_markdown(chunks[0])
         prompt = (prompt_template or DEEP_FIRST_PROMPT).replace("{total_chunks}", "1").replace("{content}", content)
-        return _call_gemini(client, DEEP_PRO_MODEL, prompt)
+        result = _call_gemini(client, DEEP_PRO_MODEL, prompt)
+        _save_progress(result)
+        return result
 
     if on_progress:
         on_progress(f"Deep mode: {total} chunks (~100K tokens each). Pro for chunk 1, Flash for 2-{total}, Pro for final synthesis.")
@@ -305,13 +311,13 @@ def analyze_deep(
     prompt = DEEP_FIRST_PROMPT.replace("{total_chunks}", str(total)).replace("{content}", chunk_md)
     running_analysis = _call_gemini(client, DEEP_PRO_MODEL, prompt)
     all_analyses = [f"## Chunk 1/{total}\n\n{running_analysis}"]
+    _save_progress("\n\n---\n\n".join(all_analyses) + "\n\n---\n\n*Synthesis pending...*")
 
     # Chunks 2..N: Flash continues with previous analysis as context
     for i, chunk_turns in enumerate(chunks[1:], 2):
         if on_progress:
             on_progress(f"Chunk {i}/{total} with {DEEP_FLASH_MODEL} (continuing with prior context)...")
         chunk_md = to_markdown(chunk_turns)
-        # Include running analysis but cap it to avoid blowing context
         prev_context = running_analysis
         if len(prev_context) > 200_000:
             prev_context = prev_context[-200_000:]
@@ -319,6 +325,7 @@ def analyze_deep(
         result = _call_gemini(client, DEEP_FLASH_MODEL, prompt)
         running_analysis = result
         all_analyses.append(f"## Chunk {i}/{total}\n\n{result}")
+        _save_progress("\n\n---\n\n".join(all_analyses) + "\n\n---\n\n*Synthesis pending...*")
 
     # Final synthesis with Pro
     if on_progress:
