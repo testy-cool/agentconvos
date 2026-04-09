@@ -684,6 +684,8 @@ def main() -> None:
     parser.add_argument("--prompt", metavar="TEXT_OR_FILE", help="Custom analysis prompt (inline text or path to .txt/.md file). Use {content} as placeholder for conversation text, {count} for multi-convo count.")
     parser.add_argument("--detail", choices=["text", "tools", "results", "full"], default="text", help="Detail level: text (default), tools (+tool calls), results (+truncated output), full (+everything)")
     parser.add_argument("--list", action="store_true", help="List all projects and conversations")
+    parser.add_argument("--show", nargs="+", metavar="ID_OR_PATH", help="Preview conversation (first ~10K words)")
+    parser.add_argument("--open", action="store_true", help="Open in Sublime Text (use with --show or --concat)")
     args = parser.parse_args()
 
     if args.list:
@@ -694,8 +696,32 @@ def main() -> None:
                 ts = c.timestamp[:10] if c.timestamp else "?"
                 name = c.slug or c.uuid[:8]
                 size = c.path.stat().st_size if c.path.exists() else 0
-                size_kb = f"{size // 1024}KB"
-                print(f"  {ts}  {name:30s}  {size_kb:>6s}  {c.preview[:50]}")
+                tokens = size // 4
+                if tokens >= 1_000_000:
+                    tok_str = f"{tokens / 1_000_000:.1f}M"
+                elif tokens >= 1000:
+                    tok_str = f"{tokens // 1000}K"
+                else:
+                    tok_str = str(tokens)
+                print(f"  {ts}  {name:30s}  ~{tok_str:>6s} tok  {c.preview[:50]}")
+        return
+
+    if args.show:
+        paths = _resolve_args(args.show)
+        for p in paths:
+            from .parser import get_meta
+            meta = get_meta(p)
+            turns = parse_jsonl(p, detail=args.detail)
+            stats = get_stats(p)
+            md = to_markdown(turns, stats=stats)
+            # Truncate to ~10K words
+            words = md.split()
+            if len(words) > 10_000:
+                md = " ".join(words[:10_000]) + f"\n\n... truncated ({len(words):,} words total, showing first 10,000)"
+            if args.open:
+                _open_in_sublime(md, meta)
+            else:
+                print(md)
         return
 
     if args.concat:
@@ -721,6 +747,8 @@ def main() -> None:
         out_path.write_text(combined, encoding="utf-8")
         print(f"Exported {len(paths)} conversations ({len(combined):,} chars, ~{len(combined)//4:,} tokens)")
         print(f"Saved to {out_path}")
+        if args.open:
+            _open_in_editor(out_path)
         return
 
     if args.analyze:
@@ -768,6 +796,28 @@ def main() -> None:
 
     app = ConvoExplorer()
     app.run()
+
+
+def _open_in_editor(path):
+    """Open a file in Sublime Text (or fallback to default editor)."""
+    import subprocess
+    try:
+        subprocess.Popen(["subl", str(path)])
+    except FileNotFoundError:
+        try:
+            subprocess.Popen(["code", str(path)])
+        except FileNotFoundError:
+            os.startfile(str(path))
+
+
+def _open_in_sublime(content: str, meta=None):
+    """Write content to a temp file and open in Sublime Text."""
+    import tempfile
+    name = (meta.slug or meta.uuid[:8]) if meta else "preview"
+    tmp = Path(tempfile.gettempdir()) / f"convo-{name}.md"
+    tmp.write_text(content, encoding="utf-8")
+    print(f"Opening in editor: {tmp}")
+    _open_in_editor(tmp)
 
 
 def _resolve_args(args: list[str]) -> list:
