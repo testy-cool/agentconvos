@@ -108,6 +108,7 @@ class ConvoExplorer(App):
         self._analyzing = False
         self._last_action: str = ""  # "analysis" or "export"
         self._resume_meta: ConversationMeta | None = None  # set when user wants to resume
+        self._search_cache: dict[str, str] = {}  # uuid -> searchable text (last 10 turns)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -160,6 +161,17 @@ class ConvoExplorer(App):
     @work(thread=True)
     def load_projects(self) -> None:
         projects = scan_projects()
+        # Build search cache: last 10 turns per conversation
+        cache = {}
+        for p in projects:
+            for c in p.conversations:
+                try:
+                    turns = parse_jsonl(c.path)
+                    tail = turns[-10:] if len(turns) > 10 else turns
+                    cache[c.uuid] = "\n".join(t.text for t in tail).lower()
+                except Exception:
+                    cache[c.uuid] = ""
+        self._search_cache = cache
         self.call_from_thread(self._populate_tree, projects)
 
     def _get_analyzed_set(self) -> set[str]:
@@ -185,11 +197,11 @@ class ConvoExplorer(App):
 
         total_convos = 0
         for p in projects:
-            # Filter conversations by preview/slug/project path
+            # Filter conversations by content (last 10 turns), slug, uuid, or project path
             if filter_text:
                 matching_convos = [
                     c for c in p.conversations
-                    if filter_text in (c.preview or "").lower()
+                    if filter_text in self._search_cache.get(c.uuid, "")
                     or filter_text in (c.slug or "").lower()
                     or filter_text in (c.uuid or "").lower()
                 ]
