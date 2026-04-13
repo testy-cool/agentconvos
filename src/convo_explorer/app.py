@@ -274,7 +274,8 @@ class ConvoExplorer(App):
     # --- Filter ---
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        self._populate_tree(self.projects, filter_text=event.value.lower().strip())
+        if event.input.id == "filter-input":
+            self._populate_tree(self.projects, filter_text=event.value.lower().strip())
 
     # --- Multi-select ---
 
