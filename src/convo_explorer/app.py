@@ -562,7 +562,13 @@ class ConvoExplorer(App):
         else:
             folder = ANALYSES_DIR.parent  # show both
         folder.mkdir(parents=True, exist_ok=True)
-        subprocess.Popen(["explorer", str(folder)])
+        import sys
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        elif sys.platform == "win32":
+            subprocess.Popen(["explorer", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
 
     # --- Gemini Analysis ---
 
