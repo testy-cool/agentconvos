@@ -24,7 +24,7 @@ from textual.widgets import (
 from textual.widgets.tree import TreeNode
 
 from .scanner import Project, scan_projects
-from .parser import ConversationMeta, parse_jsonl, to_markdown, get_stats, DETAIL_TEXT, DETAIL_TOOLS, DETAIL_RESULTS, DETAIL_FULL
+from .parser import ConversationMeta, parse_jsonl, to_markdown, get_stats, search_conversations, DETAIL_TEXT, DETAIL_TOOLS, DETAIL_RESULTS, DETAIL_FULL
 from .analyzer import MODELS, DEFAULT_MODEL, SINGLE_PROMPT, MULTI_PROMPT
 
 
@@ -73,6 +73,7 @@ class ConvoExplorer(App):
     #prompt-panel { height: 1fr; }
     #prompt-bar { dock: bottom; height: 3; }
     #prompt-bar Button { width: 1fr; margin: 0 1; }
+    #search-input { dock: top; display: none; }
     """
 
     BINDINGS = [
@@ -88,6 +89,7 @@ class ConvoExplorer(App):
         Binding("p", "edit_prompt", "Edit prompt", priority=False),
         Binding("o", "open_folder", "Open folder", priority=False),
         Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("slash", "search", "Search content", priority=False),
     ]
 
     TITLE = "convo-explorer"
@@ -115,6 +117,7 @@ class ConvoExplorer(App):
             yield Static("┃", id="resize-handle")
             with Vertical(id="content"):
                 yield Static("PREVIEW", classes="panel-title", id="right-title")
+                yield Input(placeholder="Search all conversations... (Enter to search, Esc to close)", id="search-input")
                 with VerticalScroll(id="preview-scroll"):
                     yield Markdown("*Select a project, then a conversation*", id="preview")
                 with Vertical(id="prompt-panel"):
@@ -249,9 +252,15 @@ class ConvoExplorer(App):
     @work(thread=True)
     def load_preview(self, meta: ConversationMeta) -> None:
         turns = parse_jsonl(meta.path)
-        md = to_markdown(turns)
         meta.turn_count = len(turns)
-        header = f"## {meta.slug or meta.uuid}\n**Date:** {meta.timestamp[:19]}  \n**CWD:** {meta.cwd}\n\n---\n\n"
+        # Show last 10 turns for quick preview
+        tail = turns[-10:] if len(turns) > 10 else turns
+        md = to_markdown(tail)
+        skipped = len(turns) - len(tail)
+        header = f"## {meta.slug or meta.uuid}\n**Date:** {meta.timestamp[:19]}  \n**CWD:** {meta.cwd}\n**Turns:** {len(turns)} total"
+        if skipped:
+            header += f" (showing last {len(tail)})"
+        header += "\n\n---\n\n"
         self.call_from_thread(self._set_preview, header + md, len(turns))
 
     def _set_preview(self, md: str, turn_count: int) -> None:
@@ -662,10 +671,58 @@ class ConvoExplorer(App):
         finally:
             self.call_from_thread(self._finish_analysis)
 
+    # --- Search ---
+
+    def action_search(self) -> None:
+        search_input = self.query_one("#search-input", Input)
+        if search_input.display:
+            search_input.display = False
+            self.query_one("#nav-tree", Tree).focus()
+            return
+        search_input.display = True
+        search_input.value = ""
+        search_input.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "search-input" and event.value.strip():
+            self.do_search(event.value.strip())
+
+    @work(thread=True)
+    def do_search(self, query: str) -> None:
+        self.call_from_thread(
+            lambda: self.query_one("#right-title", Static).update(f"SEARCHING: \"{query}\"...")
+        )
+        all_paths = [c.path for p in self.projects for c in p.conversations]
+        hits = search_conversations(all_paths, query)
+        if not hits:
+            self.call_from_thread(self._set_preview, f"## No results for \"{query}\"\n\nSearched {len(all_paths)} conversations.", 0)
+            self.call_from_thread(
+                lambda: self.query_one("#right-title", Static).update("SEARCH RESULTS (0)")
+            )
+            return
+        # Format results
+        lines = [f"## Search: \"{query}\"\n\n**{len(hits)} matches** across {len(all_paths)} conversations\n"]
+        for hit in hits:
+            name = hit.meta.slug or hit.meta.uuid[:8]
+            ts = hit.meta.timestamp[:10] if hit.meta.timestamp else "?"
+            lines.append(f"### {name} ({ts}) — turn {hit.turn_index + 1} ({hit.role})")
+            lines.append(f"> {hit.snippet}\n")
+        md = "\n".join(lines)
+        self.call_from_thread(self._set_preview, md, len(hits))
+        self.call_from_thread(
+            lambda: self.query_one("#right-title", Static).update(f"SEARCH RESULTS ({len(hits)})")
+        )
+
     def action_cancel(self) -> None:
         if self._analyzing:
             self._cancel_analysis()
         else:
+            # Close search if open
+            search_input = self.query_one("#search-input", Input)
+            if search_input.display:
+                search_input.display = False
+                self.query_one("#nav-tree", Tree).focus()
+                return
             # Clear filter if active
             filt = self.query_one("#filter-input", Input)
             if filt.value:
@@ -684,6 +741,7 @@ def main() -> None:
     parser.add_argument("--prompt", metavar="TEXT_OR_FILE", help="Custom analysis prompt (inline text or path to .txt/.md file). Use {content} as placeholder for conversation text, {count} for multi-convo count.")
     parser.add_argument("--detail", choices=["text", "tools", "results", "full"], default=None, help="Detail level: text, tools, results (default for analyze), full")
     parser.add_argument("--deep", nargs="+", metavar="ID_OR_PATH", help="Deep analysis: Pro for first chunk, Flash continues with context, Pro synthesizes. Uses full detail.")
+    parser.add_argument("--search", metavar="QUERY", help="Search all conversations for a string")
     parser.add_argument("--list", action="store_true", help="List all projects and conversations")
     parser.add_argument("--show", nargs="+", metavar="ID_OR_PATH", help="Preview conversation (first ~10K words)")
     parser.add_argument("--open", action="store_true", help="Open in Sublime Text (use with --show or --concat)")
@@ -691,6 +749,22 @@ def main() -> None:
     if args.detail is None:
         args.detail = "results" if (args.deep or args.analyze) else "text"
 
+
+    if args.search:
+        from .scanner import scan_projects
+        projects = scan_projects()
+        all_paths = [c.path for p in projects for c in p.conversations]
+        print(f"Searching {len(all_paths)} conversations for \"{args.search}\"...\n")
+        hits = search_conversations(all_paths, args.search)
+        if not hits:
+            print("No results found.")
+        else:
+            for hit in hits:
+                name = hit.meta.slug or hit.meta.uuid[:8]
+                ts = hit.meta.timestamp[:10] if hit.meta.timestamp else "?"
+                print(f"  {ts}  {name:25s}  turn {hit.turn_index+1:3d} ({hit.role:9s})  {hit.snippet}")
+            print(f"\n{len(hits)} matches found.")
+        return
 
     if args.list:
         from .scanner import scan_projects

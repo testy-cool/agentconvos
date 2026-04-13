@@ -231,6 +231,48 @@ def parse_jsonl(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
     return turns
 
 
+@dataclass
+class SearchHit:
+    meta: ConversationMeta
+    turn_index: int
+    role: str
+    snippet: str  # context around match
+
+
+def search_conversations(paths: list[Path], query: str, max_hits: int = 50) -> list[SearchHit]:
+    """Search across conversation files for a string (case-insensitive).
+
+    Returns matches with surrounding context.
+    """
+    query_lower = query.lower()
+    hits: list[SearchHit] = []
+    for path in paths:
+        meta = get_meta(path)
+        if not meta:
+            continue
+        try:
+            turns = parse_jsonl(path)
+        except Exception:
+            continue
+        for i, turn in enumerate(turns):
+            text_lower = turn.text.lower()
+            pos = text_lower.find(query_lower)
+            if pos == -1:
+                continue
+            # Extract snippet with context
+            start = max(0, pos - 60)
+            end = min(len(turn.text), pos + len(query) + 60)
+            snippet = turn.text[start:end].replace("\n", " ")
+            if start > 0:
+                snippet = "..." + snippet
+            if end < len(turn.text):
+                snippet += "..."
+            hits.append(SearchHit(meta=meta, turn_index=i, role=turn.role, snippet=snippet))
+            if len(hits) >= max_hits:
+                return hits
+    return hits
+
+
 def get_stats(path: Path) -> ConversationStats:
     """Extract usage stats from a conversation without parsing full content."""
     stats = ConversationStats()
