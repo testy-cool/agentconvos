@@ -90,6 +90,7 @@ class ConvoExplorer(App):
         Binding("o", "open_folder", "Open folder", priority=False),
         Binding("escape", "cancel", "Cancel", priority=True),
         Binding("slash", "search", "Search content", priority=False),
+        Binding("r", "resume", "Resume in Claude", priority=False),
     ]
 
     TITLE = "convo-explorer"
@@ -106,6 +107,7 @@ class ConvoExplorer(App):
         self._editing_prompt: str = "single"  # which prompt is being edited
         self._analyzing = False
         self._last_action: str = ""  # "analysis" or "export"
+        self._resume_meta: ConversationMeta | None = None  # set when user wants to resume
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -671,6 +673,15 @@ class ConvoExplorer(App):
         finally:
             self.call_from_thread(self._finish_analysis)
 
+    # --- Resume ---
+
+    def action_resume(self) -> None:
+        if not self.current_meta:
+            self.notify("Select a conversation first", severity="warning")
+            return
+        self._resume_meta = self.current_meta
+        self.exit()
+
     # --- Search ---
 
     def action_search(self) -> None:
@@ -905,6 +916,15 @@ def main() -> None:
 
     app = ConvoExplorer()
     app.run()
+
+    # After TUI exits, check if user wants to resume a conversation
+    if app._resume_meta:
+        meta = app._resume_meta
+        name = meta.slug or meta.uuid[:8]
+        cmd = ["claude", "-r", meta.uuid] + remaining
+        print(f"Resuming: {name} ({meta.timestamp[:10]})")
+        print(f"  {' '.join(cmd)}")
+        os.execvp("claude", cmd)
 
 
 def _open_in_editor(path):
