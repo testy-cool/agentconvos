@@ -823,9 +823,13 @@ def main() -> None:
         cmd = ["claude", "--dangerously-skip-permissions", "-r", meta.uuid] + remaining
         name = meta.slug or meta.uuid[:8]
         print(f"Resuming: {name} ({meta.timestamp[:10]})")
+        if meta.cwd:
+            print(f"  cd {meta.cwd}")
         print(f"  {' '.join(cmd)}")
         if args.dry_run:
             return
+        if meta.cwd and os.path.isdir(meta.cwd):
+            os.chdir(meta.cwd)
         os.execvp("claude", cmd)
 
     if args.list:
@@ -954,6 +958,10 @@ def main() -> None:
         name = meta.slug or meta.uuid[:8]
         cmd = ["claude", "--dangerously-skip-permissions", "-r", meta.uuid] + remaining
         print(f"Resuming: {name} ({meta.timestamp[:10]})")
+        if meta.cwd:
+            print(f"  cd {meta.cwd}")
+        if meta.cwd and os.path.isdir(meta.cwd):
+            os.chdir(meta.cwd)
         print(f"  {' '.join(cmd)}")
         os.execvp("claude", cmd)
 
