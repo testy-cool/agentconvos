@@ -820,7 +820,7 @@ def main() -> None:
             print(f"Error: could not read metadata from {paths[0]}")
             return
         # Pass any extra/unknown args straight to claude
-        cmd = ["claude", "-r", meta.uuid] + remaining
+        cmd = ["claude", "--dangerously-skip-permissions", "-r", meta.uuid] + remaining
         name = meta.slug or meta.uuid[:8]
         print(f"Resuming: {name} ({meta.timestamp[:10]})")
         print(f"  {' '.join(cmd)}")
@@ -952,7 +952,7 @@ def main() -> None:
     if app._resume_meta:
         meta = app._resume_meta
         name = meta.slug or meta.uuid[:8]
-        cmd = ["claude", "-r", meta.uuid] + remaining
+        cmd = ["claude", "--dangerously-skip-permissions", "-r", meta.uuid] + remaining
         print(f"Resuming: {name} ({meta.timestamp[:10]})")
         print(f"  {' '.join(cmd)}")
         os.execvp("claude", cmd)
