@@ -1,7 +1,7 @@
 [project]
-name = "convo-explorer"
+name = "cc-convo-explorer"
 version = "0.1.0"
-description = "TUI for browsing and analyzing Claude Code conversations"
+description = "TUI for browsing, searching, resuming, and analyzing Claude Code conversations"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
 ai = ["google-genai>=1.0"]
 
 [project.scripts]
+cc-convo-explorer = "convo_explorer.app:main"
 convo-explorer = "convo_explorer.app:main"
 
 [tool.uv]
