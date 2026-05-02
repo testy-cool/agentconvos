@@ -1,4 +1,4 @@
-"""Parse Claude Code .jsonl conversation logs into structured data."""
+"""Parse Claude Code and Codex .jsonl conversation logs into structured data."""
 
 from __future__ import annotations
 
@@ -50,10 +50,37 @@ class ConversationMeta:
     cwd: str
     preview: str  # first user message, truncated
     turn_count: int = 0
+    source: str = "claude"  # "claude" or "codex"
+
+
+def _detect_format(path: Path) -> str:
+    """Detect whether a .jsonl file is Claude Code or Codex format."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            first_line = f.readline()
+            if not first_line.strip():
+                first_line = f.readline()
+            rec = json.loads(first_line)
+            if rec.get("type") == "session_meta" or (
+                rec.get("type") in ("event_msg", "response_item", "turn_context")
+                and "payload" in rec
+            ):
+                return "codex"
+    except (json.JSONDecodeError, OSError, KeyError):
+        pass
+    return "claude"
 
 
 def get_meta(path: Path) -> ConversationMeta | None:
     """Quick-scan a .jsonl to extract metadata from the first user record."""
+    fmt = _detect_format(path)
+    if fmt == "codex":
+        return _get_meta_codex(path)
+    return _get_meta_claude(path)
+
+
+def _get_meta_claude(path: Path) -> ConversationMeta | None:
+    """Extract metadata from a Claude Code .jsonl."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -72,6 +99,58 @@ def get_meta(path: Path) -> ConversationMeta | None:
                     cwd=rec.get("cwd", ""),
                     preview=preview,
                 )
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _get_meta_codex(path: Path) -> ConversationMeta | None:
+    """Extract metadata from a Codex .jsonl."""
+    try:
+        session_id = ""
+        timestamp = ""
+        cwd = ""
+        preview = ""
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                rtype = rec.get("type", "")
+                payload = rec.get("payload", {})
+
+                if rtype == "session_meta":
+                    session_id = payload.get("id", path.stem)
+                    timestamp = payload.get("timestamp", rec.get("timestamp", ""))
+                    cwd = payload.get("cwd", "")
+
+                if rtype == "event_msg" and payload.get("type") == "user_message" and not preview:
+                    msg = payload.get("message", "")
+                    if isinstance(msg, str) and msg.strip() and len(msg.strip()) >= 3:
+                        preview = msg.strip().replace("\n", " ")[:120]
+
+                if session_id and preview:
+                    break
+
+        if not session_id:
+            session_id = path.stem
+        if not timestamp:
+            # Fall back to filename timestamp: rollout-2026-04-30T08-05-54-{uuid}.jsonl
+            stem = path.stem
+            if stem.startswith("rollout-") and len(stem) > 30:
+                ts_part = stem[8:27].replace("-", ":", 2)  # rough ISO extraction
+                timestamp = ts_part
+
+        return ConversationMeta(
+            path=path,
+            uuid=session_id,
+            slug="",
+            timestamp=timestamp,
+            cwd=cwd,
+            preview=preview,
+            source="codex",
+        )
     except (json.JSONDecodeError, OSError):
         pass
     return None
@@ -140,6 +219,14 @@ def parse_jsonl(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
       "results" — also include tool results (truncated)
       "full"    — also include tool results (untruncated)
     """
+    fmt = _detect_format(path)
+    if fmt == "codex":
+        return _parse_jsonl_codex(path, detail)
+    return _parse_jsonl_claude(path, detail)
+
+
+def _parse_jsonl_claude(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
+    """Parse Claude Code format .jsonl."""
     include_tools = detail in (DETAIL_TOOLS, DETAIL_RESULTS, DETAIL_FULL)
     include_results = detail in (DETAIL_RESULTS, DETAIL_FULL)
     truncate_results = detail == DETAIL_RESULTS
@@ -231,6 +318,134 @@ def parse_jsonl(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
     return turns
 
 
+def _summarize_codex_tool(name: str, arguments: str) -> str:
+    """One-line summary for a Codex function_call."""
+    try:
+        args = json.loads(arguments) if arguments else {}
+    except json.JSONDecodeError:
+        return arguments[:80] if arguments else "(no args)"
+    if name == "exec_command":
+        cmd = args.get("cmd", "")
+        return f"`{cmd[:120]}`" if cmd else "(empty)"
+    if name == "update_plan":
+        steps = args.get("plan", [])
+        return f"{len(steps)} steps" if steps else "?"
+    if name == "request_user_input":
+        return args.get("prompt", args.get("question", "?"))[:80]
+    if name == "spawn_agent":
+        return args.get("task", args.get("prompt", "?"))[:80]
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        short = parts[-1] if len(parts) > 1 else name
+        return short
+    keys = ", ".join(f"{k}={str(v)[:40]}" for k, v in list(args.items())[:3])
+    return keys or "(no args)"
+
+
+def _parse_jsonl_codex(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
+    """Parse Codex format .jsonl into turns."""
+    include_tools = detail in (DETAIL_TOOLS, DETAIL_RESULTS, DETAIL_FULL)
+    include_results = detail in (DETAIL_RESULTS, DETAIL_FULL)
+    truncate_results = detail == DETAIL_RESULTS
+
+    # Collect all events
+    events = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    # Build tool results map: call_id -> output text
+    tool_results: dict[str, str] = {}
+    if include_results:
+        for rec in events:
+            if rec.get("type") != "response_item":
+                continue
+            payload = rec.get("payload", {})
+            if payload.get("type") == "function_call_output":
+                call_id = payload.get("call_id", "")
+                output = payload.get("output", "")
+                # Strip the Codex header (Chunk ID, Wall time, etc.)
+                if "\nOutput:\n" in output:
+                    output = output.split("\nOutput:\n", 1)[1]
+                if call_id:
+                    tool_results[call_id] = output
+        for rec in events:
+            if rec.get("type") != "event_msg":
+                continue
+            payload = rec.get("payload", {})
+            if payload.get("type") == "exec_command_end":
+                call_id = payload.get("call_id", "")
+                output = payload.get("aggregated_output", "") or payload.get("stdout", "")
+                if call_id and call_id not in tool_results:
+                    tool_results[call_id] = output
+
+    turns: list[Turn] = []
+    # Track seen agent messages to avoid duplicates (event_msg/agent_message vs response_item/message)
+    seen_agent_texts: set[str] = set()
+
+    for rec in events:
+        rtype = rec.get("type", "")
+        payload = rec.get("payload", {})
+
+        # User messages from event_msg
+        if rtype == "event_msg" and payload.get("type") == "user_message":
+            msg = payload.get("message", "")
+            if isinstance(msg, str) and msg.strip() and len(msg.strip()) >= 3:
+                turns.append(Turn(role="user", text=msg.strip()))
+
+        # Agent messages from event_msg (prefer these over response_item duplicates)
+        elif rtype == "event_msg" and payload.get("type") == "agent_message":
+            msg = payload.get("message", "")
+            if isinstance(msg, str) and msg.strip() and len(msg.strip()) > 10:
+                text_key = msg.strip()[:200]
+                if text_key not in seen_agent_texts:
+                    seen_agent_texts.add(text_key)
+                    turns.append(Turn(role="assistant", text=msg.strip()))
+
+        # Tool calls from response_item/function_call
+        elif rtype == "response_item" and payload.get("type") == "function_call" and include_tools:
+            name = payload.get("name", "?")
+            arguments = payload.get("arguments", "")
+            call_id = payload.get("call_id", "")
+            summary = _summarize_codex_tool(name, arguments)
+            tool_line = f"> **{name}**: {summary}"
+            if include_results and call_id in tool_results:
+                result = tool_results[call_id]
+                if result:
+                    if truncate_results and len(result) > RESULT_TRUNCATE * 2:
+                        head = result[:RESULT_TRUNCATE]
+                        tail = result[-RESULT_TRUNCATE:]
+                        result = f"{head}\n... ({len(result):,} chars total) ...\n{tail}"
+                    tool_line += f"\n> ```\n> {result}\n> ```"
+            # Append to last assistant turn or create new one
+            if turns and turns[-1].role == "assistant":
+                turns[-1] = Turn(role="assistant", text=turns[-1].text + "\n\n" + tool_line)
+            else:
+                turns.append(Turn(role="assistant", text=tool_line))
+
+        # Assistant text from response_item/message (fallback if not seen via agent_message)
+        elif rtype == "response_item" and payload.get("type") == "message" and payload.get("role") == "assistant":
+            content = payload.get("content", [])
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "output_text":
+                    text_parts.append(block.get("text", ""))
+            text = "\n".join(text_parts).strip()
+            if text and len(text) > 10:
+                text_key = text[:200]
+                if text_key not in seen_agent_texts:
+                    seen_agent_texts.add(text_key)
+                    turns.append(Turn(role="assistant", text=text))
+
+    return turns
+
+
 @dataclass
 class SearchHit:
     meta: ConversationMeta
@@ -275,6 +490,14 @@ def search_conversations(paths: list[Path], query: str, max_hits: int = 50) -> l
 
 def get_stats(path: Path) -> ConversationStats:
     """Extract usage stats from a conversation without parsing full content."""
+    fmt = _detect_format(path)
+    if fmt == "codex":
+        return _get_stats_codex(path)
+    return _get_stats_claude(path)
+
+
+def _get_stats_claude(path: Path) -> ConversationStats:
+    """Extract stats from Claude Code format."""
     stats = ConversationStats()
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -297,7 +520,6 @@ def get_stats(path: Path) -> ConversationStats:
                 stats.output_tokens += usage.get("output_tokens", 0)
                 stats.cache_read_tokens += usage.get("cache_read_input_tokens", 0)
                 stats.cache_create_tokens += usage.get("cache_creation_input_tokens", 0)
-                # Count tool_use blocks
                 content = msg.get("content", []) if isinstance(msg, dict) else []
                 if isinstance(content, list):
                     for block in content:
@@ -310,6 +532,46 @@ def get_stats(path: Path) -> ConversationStats:
                     stats.duration_ms += rec.get("durationMs", 0)
                 elif sub == "api_error":
                     stats.api_errors += 1
+
+    return stats
+
+
+def _get_stats_codex(path: Path) -> ConversationStats:
+    """Extract stats from Codex format."""
+    stats = ConversationStats()
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            rtype = rec.get("type", "")
+            payload = rec.get("payload", {})
+
+            if rtype == "turn_context":
+                if not stats.model:
+                    stats.model = payload.get("model", "")
+
+            elif rtype == "event_msg":
+                ptype = payload.get("type", "")
+                if ptype == "token_count":
+                    info = payload.get("info")
+                    if isinstance(info, dict):
+                        # total_token_usage is cumulative — take the latest
+                        usage = info.get("total_token_usage", {})
+                        stats.input_tokens = usage.get("input_tokens", 0)
+                        stats.output_tokens = usage.get("output_tokens", 0)
+                        stats.cache_read_tokens = usage.get("cached_input_tokens", 0)
+                elif ptype == "task_complete":
+                    stats.duration_ms += payload.get("duration_ms", 0)
+
+            elif rtype == "response_item":
+                if payload.get("type") == "function_call":
+                    stats.tool_calls += 1
 
     return stats
 

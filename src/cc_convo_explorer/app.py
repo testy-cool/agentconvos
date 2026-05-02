@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,30 @@ from textual.widgets import (
 from textual.widgets.tree import TreeNode
 
 from .scanner import Project, scan_projects
+
+
+def _export_stem(meta: ConversationMeta) -> str:
+    """Build a human-readable filename stem from conversation metadata.
+
+    Priority: slug > preview-derived > project+uuid fragment.
+    """
+    if meta.slug:
+        return meta.slug
+
+    # Derive from first user message
+    if meta.preview:
+        # Take first ~50 chars, strip non-alphanum, collapse whitespace
+        raw = meta.preview[:50].lower()
+        raw = re.sub(r"[^a-z0-9\s-]", "", raw)
+        raw = re.sub(r"\s+", "-", raw.strip())
+        raw = raw.strip("-")
+        if len(raw) >= 4:
+            return raw
+
+    # Fallback: project name + short uuid
+    proj = Path(meta.cwd).name if meta.cwd else ""
+    short_id = meta.uuid[:8]
+    return f"{proj}-{short_id}" if proj else short_id
 from .parser import ConversationMeta, parse_jsonl, to_markdown, get_stats, search_conversations, DETAIL_TEXT, DETAIL_TOOLS, DETAIL_RESULTS, DETAIL_FULL
 from .analyzer import MODELS, DEFAULT_MODEL, SINGLE_PROMPT, MULTI_PROMPT
 
@@ -94,9 +119,10 @@ class ConvoExplorer(App):
 
     TITLE = "cc-convo-explorer"
 
-    def __init__(self) -> None:
+    def __init__(self, extra_dirs: list[Path] | None = None) -> None:
         super().__init__()
         self.projects: list[Project] = []
+        self._extra_dirs = extra_dirs
         self.current_meta: ConversationMeta | None = None
         self._dragging_sidebar = False
         self._model_index = 0
@@ -158,7 +184,7 @@ class ConvoExplorer(App):
 
     @work(thread=True)
     def load_projects(self) -> None:
-        projects = scan_projects()
+        projects = scan_projects(extra_dirs=self._extra_dirs)
         # Build search cache: last 10 turns per conversation
         cache = {}
         for p in projects:
@@ -510,7 +536,7 @@ class ConvoExplorer(App):
         md = to_markdown(turns)
         out_dir = Path("output")
         out_dir.mkdir(exist_ok=True)
-        name = meta.slug or meta.uuid[:12]
+        name = _export_stem(meta)
         ts = meta.timestamp[:10] if meta.timestamp else "export"
         out_path = out_dir / f"{name}_{ts}.md"
         out_path.write_text(md, encoding="utf-8")
@@ -526,7 +552,7 @@ class ConvoExplorer(App):
             meta = nd.meta
             turns = parse_jsonl(meta.path)
             md = to_markdown(turns)
-            name = meta.slug or meta.uuid[:12]
+            name = _export_stem(meta)
             ts = meta.timestamp[:10] if meta.timestamp else "export"
             out_path = out_dir / f"{name}_{ts}.md"
             out_path.write_text(md, encoding="utf-8")
@@ -548,7 +574,7 @@ class ConvoExplorer(App):
             meta = nd.meta
             turns = parse_jsonl(meta.path)
             md = to_markdown(turns)
-            name = meta.slug or meta.uuid[:8]
+            name = _export_stem(meta)
             ts = meta.timestamp[:10] if meta.timestamp else "?"
             header = f"# {name} ({ts})\n**CWD:** {meta.cwd}\n\n"
             parts.append(header + md)
@@ -724,6 +750,9 @@ class ConvoExplorer(App):
         if not self.current_meta:
             self.notify("Select a conversation first", severity="warning")
             return
+        if self.current_meta.source == "codex":
+            self.notify("Resume not supported for Codex conversations", severity="warning")
+            return
         self._resume_meta = self.current_meta
         self.exit()
 
@@ -780,7 +809,7 @@ class ConvoExplorer(App):
 
 def main() -> None:
     import argparse
-    parser = argparse.ArgumentParser(description="Browse and analyze Claude Code conversations")
+    parser = argparse.ArgumentParser(description="Browse and analyze Claude Code and Codex conversations")
     parser.add_argument("--analyze", nargs="+", metavar="ID_OR_PATH", help="Analyze conversations (JSONL paths, UUIDs, or slugs)")
     parser.add_argument("--concat", nargs="+", metavar="ID_OR_PATH", help="Export concatenated markdown (JSONL paths, UUIDs, or slugs)")
     parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL, help="Gemini model")
@@ -793,14 +822,19 @@ def main() -> None:
     parser.add_argument("--open", action="store_true", help="Open in Sublime Text (use with --show or --concat)")
     parser.add_argument("--resume", nargs=1, metavar="ID_OR_PATH", help="Resume a conversation with claude -r (add extra claude flags after --)")
     parser.add_argument("--dry-run", action="store_true", help="Print the command instead of running it (use with --resume)")
+    parser.add_argument("--export-all", metavar="DIR", help="Export every conversation as individual markdown files to DIR")
+    parser.add_argument("--projects-dir", nargs="+", metavar="DIR", help="Additional projects directories to scan (e.g. copied from other machines)")
     args, remaining = parser.parse_known_args()
+
+    # Parse extra project dirs
+    _extra_dirs = [Path(d) for d in args.projects_dir] if args.projects_dir else None
     if args.detail is None:
         args.detail = "results" if (args.deep or args.analyze) else "text"
 
 
     if args.search:
         from .scanner import scan_projects
-        projects = scan_projects()
+        projects = scan_projects(extra_dirs=_extra_dirs)
         all_paths = [c.path for p in projects for c in p.conversations]
         print(f"Searching {len(all_paths)} conversations for \"{args.search}\"...\n")
         hits = search_conversations(all_paths, args.search)
@@ -815,13 +849,16 @@ def main() -> None:
         return
 
     if args.resume:
-        paths = _resolve_args(args.resume)
+        paths = _resolve_args(args.resume, extra_dirs=_extra_dirs)
         if not paths:
             return
         from .parser import get_meta
         meta = get_meta(paths[0])
         if not meta:
             print(f"Error: could not read metadata from {paths[0]}")
+            return
+        if meta.source == "codex":
+            print("Error: resume not supported for Codex conversations")
             return
         # Pass any extra/unknown args straight to claude
         cmd = ["claude", "--dangerously-skip-permissions", "-r", meta.uuid] + remaining
@@ -838,7 +875,7 @@ def main() -> None:
 
     if args.list:
         from .scanner import scan_projects
-        for p in scan_projects():
+        for p in scan_projects(extra_dirs=_extra_dirs):
             print(f"\n{p.display_path} ({len(p.conversations)} convos)")
             for c in p.conversations:
                 ts = c.timestamp[:10] if c.timestamp else "?"
@@ -855,7 +892,7 @@ def main() -> None:
         return
 
     if args.show:
-        paths = _resolve_args(args.show)
+        paths = _resolve_args(args.show, extra_dirs=_extra_dirs)
         for p in paths:
             from .parser import get_meta
             meta = get_meta(p)
@@ -872,9 +909,33 @@ def main() -> None:
                 print(md)
         return
 
+    if args.export_all:
+        from .scanner import scan_projects
+        from .parser import get_meta
+        out_dir = Path(args.export_all)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        projects = scan_projects(extra_dirs=_extra_dirs)
+        total = 0
+        for proj in projects:
+            for c in proj.conversations:
+                try:
+                    turns = parse_jsonl(c.path, detail=args.detail)
+                    stats = get_stats(c.path)
+                    md = to_markdown(turns, stats=stats)
+                    name = _export_stem(c)
+                    ts = c.timestamp[:10] if c.timestamp else "unknown"
+                    filename = f"{ts}_{name}_{c.uuid[:8]}.md"
+                    (out_dir / filename).write_text(f"# {name} ({ts})\n**CWD:** {c.cwd}\n\n{md}", encoding="utf-8")
+                    total += 1
+                    print(f"  [{total}] {filename}")
+                except Exception as e:
+                    print(f"  SKIP {c.uuid[:8]}: {e}")
+        print(f"\nExported {total} conversations to {out_dir}")
+        return
+
     if args.concat:
         from pathlib import Path as P
-        paths = _resolve_args(args.concat)
+        paths = _resolve_args(args.concat, extra_dirs=_extra_dirs)
         parts = []
         for p in paths:
             from .parser import get_meta
@@ -882,7 +943,7 @@ def main() -> None:
             turns = parse_jsonl(p, detail=args.detail)
             stats = get_stats(p)
             md = to_markdown(turns, stats=stats)
-            name = (meta.slug or meta.uuid[:8]) if meta else p.stem[:12]
+            name = _export_stem(meta) if meta else p.stem[:12]
             ts = (meta.timestamp[:10]) if meta else "?"
             cwd = meta.cwd if meta else "?"
             parts.append(f"# {name} ({ts})\n**CWD:** {cwd}\n\n{md}")
@@ -917,7 +978,7 @@ def main() -> None:
                 custom_prompt += "\n\nCONVERSATION:\n{content}"
 
         analyze_ids = args.deep or args.analyze
-        paths = _resolve_args(analyze_ids)
+        paths = _resolve_args(analyze_ids, extra_dirs=_extra_dirs)
         def _progress(msg): print(f"  {msg}", flush=True)
 
         # Pre-compute output path so deep mode can save progress
@@ -953,7 +1014,7 @@ def main() -> None:
         print(f"\n--- Cost ---\n{get_cost_summary()}")
         return
 
-    app = ConvoExplorer()
+    app = ConvoExplorer(extra_dirs=_extra_dirs)
     app.run()
 
     # After TUI exits, check if user wants to resume a conversation
@@ -992,7 +1053,7 @@ def _open_in_sublime(content: str, meta=None):
     _open_in_editor(tmp)
 
 
-def _resolve_args(args: list[str]) -> list:
+def _resolve_args(args: list[str], extra_dirs: list[Path] | None = None) -> list:
     """Resolve a mix of file paths and conversation IDs to Path objects."""
     from pathlib import Path as P
     file_paths = []
@@ -1005,7 +1066,7 @@ def _resolve_args(args: list[str]) -> list:
             ids_to_resolve.append(arg)
     if ids_to_resolve:
         from .scanner import resolve_ids
-        file_paths.extend(resolve_ids(ids_to_resolve))
+        file_paths.extend(resolve_ids(ids_to_resolve, extra_dirs=extra_dirs))
     if not file_paths:
         print("Error: no conversations found for the given arguments")
         import sys

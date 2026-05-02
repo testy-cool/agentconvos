@@ -1,4 +1,4 @@
-"""Scan ~/.claude/projects/ for Claude Code conversation logs."""
+"""Scan ~/.claude/projects/ and ~/.codex/sessions/ for conversation logs."""
 
 from __future__ import annotations
 
@@ -12,6 +12,11 @@ from .parser import ConversationMeta, get_meta
 def _claude_projects_dir() -> Path:
     home = Path(os.environ.get("USERPROFILE", Path.home()))
     return home / ".claude" / "projects"
+
+
+def _codex_sessions_dir() -> Path:
+    home = Path(os.environ.get("USERPROFILE", Path.home()))
+    return home / ".codex" / "sessions"
 
 
 def _folder_to_path(folder_name: str) -> str:
@@ -41,35 +46,62 @@ class Project:
     conversations: list[ConversationMeta] = field(default_factory=list)
 
 
-def scan_projects() -> list[Project]:
+def scan_projects(extra_dirs: list[Path] | None = None) -> list[Project]:
     """Find all projects and their conversations, sorted by most recent first."""
-    base = _claude_projects_dir()
-    if not base.is_dir():
-        return []
-
     projects: list[Project] = []
-    for entry in sorted(base.iterdir()):
-        if not entry.is_dir():
-            continue
-        jsonl_files = list(entry.glob("*.jsonl"))
-        if not jsonl_files:
-            continue
 
-        convos = []
-        for jf in jsonl_files:
+    # Scan Claude Code projects
+    bases = [_claude_projects_dir()]
+    if extra_dirs:
+        bases.extend(extra_dirs)
+    for base in bases:
+        if not base.is_dir():
+            continue
+        for entry in sorted(base.iterdir()):
+            if not entry.is_dir():
+                continue
+            jsonl_files = list(entry.glob("*.jsonl"))
+            if not jsonl_files:
+                continue
+
+            convos = []
+            for jf in jsonl_files:
+                meta = get_meta(jf)
+                if meta:
+                    convos.append(meta)
+
+            convos.sort(key=lambda c: c.timestamp, reverse=True)
+
+            display = convos[0].cwd if convos and convos[0].cwd else _folder_to_path(entry.name)
+            projects.append(Project(
+                folder_name=entry.name,
+                display_path=display,
+                conversations=convos,
+            ))
+
+    # Scan Codex sessions — group by cwd into virtual "projects"
+    codex_base = _codex_sessions_dir()
+    if codex_base.is_dir():
+        codex_convos: list[ConversationMeta] = []
+        for jf in codex_base.rglob("*.jsonl"):
             meta = get_meta(jf)
             if meta:
-                convos.append(meta)
+                codex_convos.append(meta)
 
-        convos.sort(key=lambda c: c.timestamp, reverse=True)
+        # Group by cwd
+        by_cwd: dict[str, list[ConversationMeta]] = {}
+        for c in codex_convos:
+            key = c.cwd or "(no project)"
+            by_cwd.setdefault(key, []).append(c)
 
-        # Use cwd from the most recent conversation as the real path (if available)
-        display = convos[0].cwd if convos and convos[0].cwd else _folder_to_path(entry.name)
-        projects.append(Project(
-            folder_name=entry.name,
-            display_path=display,
-            conversations=convos,
-        ))
+        for cwd, convos in by_cwd.items():
+            convos.sort(key=lambda c: c.timestamp, reverse=True)
+            folder = "codex:" + (Path(cwd).name if cwd and cwd != "(no project)" else "misc")
+            projects.append(Project(
+                folder_name=folder,
+                display_path=f"[codex] {cwd}",
+                conversations=convos,
+            ))
 
     # Sort projects by most recent conversation
     projects.sort(
@@ -79,13 +111,13 @@ def scan_projects() -> list[Project]:
     return projects
 
 
-def resolve_ids(ids: list[str]) -> list[Path]:
+def resolve_ids(ids: list[str], extra_dirs: list[Path] | None = None) -> list[Path]:
     """Resolve conversation IDs (UUID prefix or slug) to JSONL file paths.
 
     Matches against uuid (prefix match) and slug (exact or substring).
     Returns list of resolved paths. Prints warnings for unresolved IDs.
     """
-    projects = scan_projects()
+    projects = scan_projects(extra_dirs=extra_dirs)
     all_convos = [c for p in projects for c in p.conversations]
 
     resolved = []
