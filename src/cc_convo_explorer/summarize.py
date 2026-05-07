@@ -64,18 +64,25 @@ def _load_api_key() -> str:
 
 def _call_bifrost(prompt: str, api_key: str) -> str:
     import httpx
-    resp = httpx.post(
-        BIFROST_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "model": MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 100,
-        },
-        timeout=60,
-    )
+    import time
+    for attempt in range(3):
+        resp = httpx.post(
+            BIFROST_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 100,
+            },
+            timeout=60,
+        )
+        if resp.status_code == 429 and attempt < 2:
+            time.sleep(10 * (attempt + 1))
+            continue
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip().strip('"')
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip().strip('"')
+    return ""
 
 
 def summarize_session(meta: ConversationMeta, api_key: str) -> str:

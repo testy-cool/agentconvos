@@ -1198,14 +1198,16 @@ def main() -> None:
             raise SystemExit(1)
         projects = scan_projects(extra_dirs=_extra_dirs)
 
+        import sys
+        is_tty = sys.stdout.isatty()
+
         def on_progress(done, total, skipped, result):
-            status = f"  [{done}/{total}]"
             if result and result.startswith("ERROR"):
-                print(f"{status} {result}")
+                print(f"  [{done}/{total}] {result}")
             elif result:
-                print(f"{status} {result[:80]}")
-            else:
-                print(f"{status} (cached)", end="\r")
+                print(f"  [{done}/{total}] {result[:80]}")
+            elif is_tty:
+                print(f"  [{done}/{total}] (cached)", end="\r", flush=True)
 
         print("Summarizing sessions...")
         done, skipped = summarize_all(projects, api_key, on_progress)
