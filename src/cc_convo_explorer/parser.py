@@ -210,7 +210,7 @@ def _extract_tool_result_text(content) -> str:
     return ""
 
 
-def parse_jsonl(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
+def parse_jsonl(path: Path, detail: str = DETAIL_TEXT, last_n: int = 0) -> list[Turn]:
     """Extract turns from a .jsonl conversation log.
 
     detail levels:
@@ -218,11 +218,17 @@ def parse_jsonl(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
       "tools"   — also include tool call summaries
       "results" — also include tool results (truncated)
       "full"    — also include tool results (untruncated)
+
+    last_n: if > 0, return only the last N turns (default 0 = all turns)
     """
     fmt = _detect_format(path)
     if fmt == "codex":
-        return _parse_jsonl_codex(path, detail)
-    return _parse_jsonl_claude(path, detail)
+        turns = _parse_jsonl_codex(path, detail)
+    else:
+        turns = _parse_jsonl_claude(path, detail)
+    if last_n > 0:
+        return turns[-last_n:]
+    return turns
 
 
 def _parse_jsonl_claude(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
