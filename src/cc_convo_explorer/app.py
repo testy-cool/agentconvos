@@ -62,7 +62,8 @@ def _export_stem(meta: ConversationMeta) -> str:
         from .summarize import load_summaries
         summary = load_summaries().get(meta.uuid)
         if summary:
-            return summary
+            words = summary.strip("- ").split()[:6]
+            return " ".join(words)
     except Exception:
         pass
 
