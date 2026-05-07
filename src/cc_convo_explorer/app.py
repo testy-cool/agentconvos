@@ -30,6 +30,29 @@ from textual.widgets.tree import TreeNode
 from .scanner import Project, scan_projects
 
 
+def _group_key(display_path: str, source: str) -> tuple[str, str]:
+    """Return (group_name, relative_label) for a project path."""
+    home = str(Path.home())
+    if display_path.startswith(home):
+        display_path = "~" + display_path[len(home):]
+
+    if source == "codex":
+        return "[codex]", display_path
+
+    if display_path.startswith("~/Work"):
+        rest = display_path[len("~/Work/"):]
+        return "~/Work", rest or display_path
+    if display_path.startswith("~/."):
+        parts = display_path.split("/")
+        group = "/".join(parts[:2])  # e.g. "~/.claude"
+        rest = "/".join(parts[2:])
+        return group, rest or display_path
+    if display_path.startswith("~/"):
+        return "~", display_path[len("~/"):]
+
+    return "Other", display_path
+
+
 def _export_stem(meta: ConversationMeta) -> str:
     """Build a human-readable filename stem from conversation metadata.
 
@@ -260,79 +283,112 @@ class ConvoExplorer(App):
                     analyzed.add(f.stem.lower())
         return analyzed
 
-    def _is_analyzed(self, analyzed: set[str], name: str) -> bool:
+    def _is_analyzed(self, name: str) -> bool:
         """Check if any analysis file contains this name."""
+        analyzed = self._get_analyzed_set()
         name_lower = name.lower().replace("\\", " ").replace("/", " ").replace("-", " ")
         return any(name_lower in a.replace("-", " ") for a in analyzed)
 
-    def _populate_tree(self, projects: list[Project], filter_text: str = "") -> None:
+    def _populate_tree(self, projects: list, filter_text: str = "") -> None:
         self.projects = projects
-        tree = self.query_one("#nav-tree", Tree)
+        tree = self.query_one(Tree)
         tree.clear()
-        analyzed = self._get_analyzed_set()
-        cwd = os.path.realpath(os.getcwd())
+        tree.root.data = None
+        ft = filter_text.strip().lower()
 
-        total_convos = 0
-        for p in projects:
-            # Filter conversations by content (last 10 turns), slug, uuid, or project path
-            if filter_text:
-                matching_convos = [
-                    c for c in p.conversations
-                    if filter_text in self._search_cache.get(c.uuid, "")
-                    or filter_text in (c.slug or "").lower()
-                    or filter_text in (c.uuid or "").lower()
+        summaries = {}
+        try:
+            from .summarize import load_summaries
+            summaries = load_summaries()
+        except Exception:
+            pass
+
+        cwd = os.getcwd()
+        groups: dict[str, list[tuple[str, object]]] = {}
+        filtered_count = 0
+
+        for proj in projects:
+            convos = proj.conversations
+            if ft:
+                convos = [
+                    c for c in convos
+                    if ft in (self._search_cache.get(c.uuid, "") or "").lower()
+                    or ft in (c.slug or "").lower()
+                    or ft in c.uuid.lower()
+                    or ft in proj.display_path.lower()
                 ]
-                # Also keep entire project if path matches
-                if not matching_convos and filter_text not in p.display_path.lower() and filter_text not in p.folder_name.lower():
-                    continue
-                convos_to_show = matching_convos or p.conversations
-            else:
-                convos_to_show = p.conversations
+            if not convos:
+                continue
 
-            short = p.display_path
-            if len(short) > 50:
-                short = "..." + short[-47:]
+            source = convos[0].source if convos else "claude"
+            gkey, rel_label = _group_key(proj.display_path, source)
+            groups.setdefault(gkey, []).append((rel_label, proj, convos))
+            filtered_count += len(convos)
 
-            n = len(convos_to_show)
-            total_convos += n
-            ts = convos_to_show[0].timestamp[:10] if convos_to_show else ""
-            proj_name = Path(p.display_path).name if p.display_path else p.folder_name
-            marker = " ★" if self._is_analyzed(analyzed, proj_name) else ""
-            is_cwd = os.path.realpath(p.display_path) == cwd
-            project_label = f"{short}  ({n})  {ts}{marker}"
-            if is_cwd:
-                label = Text("● ", style="bold cyan")
-                label.append(project_label, style="bold cyan")
-            else:
-                label = project_label
+        self.query_one("#left-title", Static).update(
+            f" PROJECTS ({filtered_count})"
+        )
 
-            pnode = tree.root.add(
-                label,
-                data=NodeData(kind="project", project=p, is_cwd=is_cwd),
-                expand=bool(filter_text) or is_cwd,
+        group_order = ["~/Work"]
+        for k in sorted(groups.keys()):
+            if k not in group_order and k not in ("[codex]", "Other"):
+                group_order.append(k)
+        if "[codex]" in groups:
+            group_order.append("[codex]")
+        if "Other" in groups:
+            group_order.append("Other")
+
+        for gkey in group_order:
+            if gkey not in groups:
+                continue
+            items = groups[gkey]
+            group_node = tree.root.add(
+                gkey,
+                data=NodeData(kind="group"),
+                expand=any(
+                    cwd == p.display_path or cwd.startswith(p.display_path + "/")
+                    for _, p, _ in items
+                ) or bool(ft),
             )
 
-            for c in convos_to_show:
-                cts = c.timestamp[:10] if c.timestamp else "?"
-                name = c.slug or c.uuid[:8]
-                preview = c.preview[:45] if c.preview else ""
-                convo_label = f"  {cts}  {name}  {preview}"
-                pnode.add_leaf(
-                    convo_label,
-                    data=NodeData(kind="convo", project=p, meta=c),
+            for rel_label, proj, convos in sorted(items, key=lambda x: x[0]):
+                is_cwd = cwd == proj.display_path
+                date_str = convos[0].timestamp[:10] if convos else ""
+                count = len(convos)
+
+                plabel = Text()
+                if is_cwd:
+                    plabel.append("● ", "bold cyan")
+                plabel.append(f"{rel_label}  ({count})  {date_str}")
+                if self._is_analyzed(proj.folder_name):
+                    plabel.append(" ★", "yellow")
+
+                pnode = group_node.add(
+                    plabel,
+                    data=NodeData(kind="project", project=proj, is_cwd=is_cwd),
+                    expand=is_cwd or bool(ft),
                 )
 
-        shown = len([n for n in tree.root.children])
-        self.query_one("#left-title", Static).update(
-            f"PROJECTS ({shown})  ·  S=select  Ctrl+A=all"
-        )
+                for c in convos:
+                    d = c.timestamp[:10] if c.timestamp else ""
+                    slug = c.slug or c.uuid[:8]
+                    summary = summaries.get(c.uuid, "")
+                    if summary:
+                        preview = summary[:60]
+                    else:
+                        preview = (c.preview or "")[:45]
+                    pnode.add_leaf(
+                        f"  {d}  {slug}  {preview}",
+                        data=NodeData(kind="convo", meta=c, project=proj),
+                    )
+
+        shown = sum(len(items) for items in groups.values())
         self.query_one("#status-bar", Static).update(
-            f" {shown} projects · {total_convos} conversations · / search · S select · Tab switch · A analyze · E export"
+            f" {shown} projects · {filtered_count} conversations · / search · S select · Tab switch · A analyze · E export"
         )
 
     def _refresh_analyzed_markers(self) -> None:
         """Re-scan analyses dir and update ★ markers on project nodes."""
-        analyzed = self._get_analyzed_set()
         tree = self.query_one("#nav-tree", Tree)
         for pnode in tree.root.children:
             data: NodeData = pnode.data
@@ -345,7 +401,7 @@ class ConvoExplorer(App):
                 label = label[2:]
             if data.is_cwd and label.startswith("✓ ● "):
                 label = label[4:]
-            if self._is_analyzed(analyzed, proj_name):
+            if self._is_analyzed(proj_name):
                 label += " ★"
             if data.is_cwd:
                 prefix = label[:2] if label.startswith("✓ ") else ""
