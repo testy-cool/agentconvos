@@ -8,10 +8,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from rich.text import Text
+
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     Footer,
@@ -53,6 +56,54 @@ from .parser import ConversationMeta, parse_jsonl, to_markdown, get_stats, searc
 from .analyzer import MODELS, DEFAULT_MODEL, SINGLE_PROMPT, MULTI_PROMPT
 
 
+def _export_date(meta: ConversationMeta) -> str:
+    """Return MM-DD-YYYY date string from conversation timestamp."""
+    if meta.timestamp and len(meta.timestamp) >= 10:
+        try:
+            dt = datetime.fromisoformat(meta.timestamp[:10])
+            return dt.strftime("%m-%d-%Y")
+        except ValueError:
+            pass
+    return datetime.now().strftime("%m-%d-%Y")
+
+
+def _export_filename(meta: ConversationMeta, custom_name: str = "") -> str:
+    """Build export filename: MM-DD-YYYY-{name}.md"""
+    date = _export_date(meta)
+    name = custom_name.strip() if custom_name else _export_stem(meta)
+    name = re.sub(r"[^a-zA-Z0-9_\s-]", "", name)
+    name = re.sub(r"\s+", "-", name.strip()).strip("-")
+    if not name:
+        name = _export_stem(meta)
+    return f"{date}-{name}.md"
+
+
+class ExportNameScreen(ModalScreen[str]):
+    """Prompt for an optional export name."""
+
+    CSS = """
+    ExportNameScreen { align: center middle; }
+    #export-dialog { width: 60; height: auto; max-height: 10; border: thick $accent; background: $surface; padding: 1 2; }
+    #export-name-input { width: 100%; }
+    #export-hint { color: $text-muted; margin-bottom: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="export-dialog"):
+            yield Static("Export name (Enter to skip):", id="export-hint")
+            yield Input(placeholder=self._default_name, id="export-name-input")
+
+    def __init__(self, default_name: str = "") -> None:
+        super().__init__()
+        self._default_name = default_name
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def key_escape(self) -> None:
+        self.dismiss("")
+
+
 ANALYSES_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / ".claude" / "convo-explorer" / "analyses"
 
 
@@ -73,6 +124,7 @@ class NodeData:
     project: Project | None = None
     meta: ConversationMeta | None = None
     selected: bool = False  # for multi-select
+    is_cwd: bool = False
 
 
 class ConvoExplorer(App):
@@ -218,6 +270,7 @@ class ConvoExplorer(App):
         tree = self.query_one("#nav-tree", Tree)
         tree.clear()
         analyzed = self._get_analyzed_set()
+        cwd = os.path.realpath(os.getcwd())
 
         total_convos = 0
         for p in projects:
@@ -245,12 +298,18 @@ class ConvoExplorer(App):
             ts = convos_to_show[0].timestamp[:10] if convos_to_show else ""
             proj_name = Path(p.display_path).name if p.display_path else p.folder_name
             marker = " ★" if self._is_analyzed(analyzed, proj_name) else ""
+            is_cwd = os.path.realpath(p.display_path) == cwd
             project_label = f"{short}  ({n})  {ts}{marker}"
+            if is_cwd:
+                label = Text("● ", style="bold cyan")
+                label.append(project_label, style="bold cyan")
+            else:
+                label = project_label
 
             pnode = tree.root.add(
-                project_label,
-                data=NodeData(kind="project", project=p),
-                expand=bool(filter_text),
+                label,
+                data=NodeData(kind="project", project=p, is_cwd=is_cwd),
+                expand=bool(filter_text) or is_cwd,
             )
 
             for c in convos_to_show:
@@ -281,11 +340,21 @@ class ConvoExplorer(App):
                 continue
             proj_name = Path(data.project.display_path).name if data.project.display_path else ""
             label = str(pnode.label)
-            # Strip old marker
             label = label.replace(" ★", "")
+            if data.is_cwd and label.startswith("● "):
+                label = label[2:]
+            if data.is_cwd and label.startswith("✓ ● "):
+                label = label[4:]
             if self._is_analyzed(analyzed, proj_name):
                 label += " ★"
-            pnode.set_label(label)
+            if data.is_cwd:
+                prefix = label[:2] if label.startswith("✓ ") else ""
+                body = label[2:] if prefix else label
+                styled = Text(f"{prefix}● ", style="bold cyan")
+                styled.append(body, style="bold cyan")
+                pnode.set_label(styled)
+            else:
+                pnode.set_label(label)
 
     # --- Tree interaction ---
 
@@ -365,11 +434,17 @@ class ConvoExplorer(App):
         if not data:
             return
         label = str(node.label)
-        # Strip existing marker
         if label.startswith("✓ ") or label.startswith("○ "):
             label = label[2:]
-        marker = "✓ " if data.selected else ""
-        node.set_label(f"{marker}{label}")
+        if data.is_cwd and label.startswith("● "):
+            label = label[2:]
+        select_marker = "✓ " if data.selected else ""
+        if data.is_cwd:
+            styled = Text(f"{select_marker}● ", style="bold cyan")
+            styled.append(label, style="bold cyan")
+            node.set_label(styled)
+        else:
+            node.set_label(f"{select_marker}{label}")
 
     def action_toggle_select(self) -> None:
         tree = self.query_one("#nav-tree", Tree)
@@ -524,37 +599,37 @@ class ConvoExplorer(App):
     def action_export(self) -> None:
         selected = self._get_selected_nodes()
         if selected:
-            self.do_export_multi(selected)
+            default = _export_stem(selected[0].meta) if len(selected) == 1 else ""
+            self.push_screen(ExportNameScreen(default), lambda name: self.do_export_multi(selected, name))
         elif self.current_meta:
-            self.do_export_single(self.current_meta)
+            default = _export_stem(self.current_meta)
+            self.push_screen(ExportNameScreen(default), lambda name: self.do_export_single(self.current_meta, name))
         else:
             self.notify("Select a conversation first", severity="warning")
 
     @work(thread=True)
-    def do_export_single(self, meta: ConversationMeta) -> None:
+    def do_export_single(self, meta: ConversationMeta, custom_name: str = "") -> None:
         turns = parse_jsonl(meta.path)
         md = to_markdown(turns)
         out_dir = Path("output")
         out_dir.mkdir(exist_ok=True)
-        name = _export_stem(meta)
-        ts = meta.timestamp[:10] if meta.timestamp else "export"
-        out_path = out_dir / f"{name}_{ts}.md"
+        filename = _export_filename(meta, custom_name)
+        out_path = out_dir / filename
         out_path.write_text(md, encoding="utf-8")
         self.call_from_thread(self.notify, f"Exported to {out_path.resolve()}")
         self._last_action = "export"
         self._last_export_dir = out_dir.resolve()
 
     @work(thread=True)
-    def do_export_multi(self, nodes: list[NodeData]) -> None:
+    def do_export_multi(self, nodes: list[NodeData], custom_name: str = "") -> None:
         out_dir = Path("output")
         out_dir.mkdir(exist_ok=True)
         for nd in nodes:
             meta = nd.meta
             turns = parse_jsonl(meta.path)
             md = to_markdown(turns)
-            name = _export_stem(meta)
-            ts = meta.timestamp[:10] if meta.timestamp else "export"
-            out_path = out_dir / f"{name}_{ts}.md"
+            filename = _export_filename(meta, custom_name if len(nodes) == 1 else "")
+            out_path = out_dir / filename
             out_path.write_text(md, encoding="utf-8")
         self.call_from_thread(self.notify, f"Exported {len(nodes)} conversations to {out_dir.resolve()}/")
         self._last_action = "export"
@@ -575,14 +650,14 @@ class ConvoExplorer(App):
             turns = parse_jsonl(meta.path)
             md = to_markdown(turns)
             name = _export_stem(meta)
-            ts = meta.timestamp[:10] if meta.timestamp else "?"
-            header = f"# {name} ({ts})\n**CWD:** {meta.cwd}\n\n"
+            date = _export_date(meta)
+            header = f"# {name} ({date})\n**CWD:** {meta.cwd}\n\n"
             parts.append(header + md)
 
         combined = "\n\n---\n\n".join(parts)
         out_dir = ANALYSES_DIR.parent / "exports"
         out_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        ts = datetime.now().strftime("%m-%d-%Y_%H-%M-%S")
         first_meta = nodes[0].meta
         proj = Path(first_meta.cwd).name if first_meta and first_meta.cwd else "mixed"
         out_path = out_dir / f"{ts}-{proj}-{len(nodes)}-convos-combined.md"
@@ -822,8 +897,11 @@ def main() -> None:
     parser.add_argument("--open", action="store_true", help="Open in Sublime Text (use with --show or --concat)")
     parser.add_argument("--resume", nargs=1, metavar="ID_OR_PATH", help="Resume a conversation with claude -r (add extra claude flags after --)")
     parser.add_argument("--dry-run", action="store_true", help="Print the command instead of running it (use with --resume)")
+    parser.add_argument("--handoff", action="store_true", help="Export latest CWD conversation and start a new Claude session with it as context")
     parser.add_argument("--export-all", metavar="DIR", help="Export every conversation as individual markdown files to DIR")
     parser.add_argument("--projects-dir", nargs="+", metavar="DIR", help="Additional projects directories to scan (e.g. copied from other machines)")
+    parser.add_argument("--summarize", action="store_true",
+                        help="Generate missing session summaries via Gemini (cron-friendly)")
     args, remaining = parser.parse_known_args()
 
     # Parse extra project dirs
@@ -871,6 +949,37 @@ def main() -> None:
             return
         if meta.cwd and os.path.isdir(meta.cwd):
             os.chdir(meta.cwd)
+        os.execvp("claude", cmd)
+
+    if args.handoff:
+        from .scanner import scan_projects
+        cwd = os.path.realpath(os.getcwd())
+        projects = scan_projects(extra_dirs=_extra_dirs)
+        cwd_convos = []
+        for p in projects:
+            if os.path.realpath(p.display_path) == cwd:
+                cwd_convos.extend(p.conversations)
+        if not cwd_convos:
+            print(f"No conversations found for {cwd}")
+            return
+        cwd_convos.sort(key=lambda c: c.timestamp or "", reverse=True)
+        meta = cwd_convos[0]
+        out_dir = Path("output")
+        out_dir.mkdir(exist_ok=True)
+        turns = parse_jsonl(meta.path, detail=args.detail)
+        stats = get_stats(meta.path)
+        md = to_markdown(turns, stats=stats)
+        filename = _export_filename(meta)
+        out_path = out_dir / filename
+        out_path.write_text(md, encoding="utf-8")
+        name = meta.slug or meta.uuid[:8]
+        print(f"Exported: {name} → {out_path}")
+        message = f"Read the file {out_path.resolve()} for context from our last session, then summarize what we were working on and ask how to continue."
+        cmd = ["claude", "--dangerously-skip-permissions"] + remaining + [message]
+        display = " ".join(cmd[:-1]) + f' "{message}"'
+        print(f"  {display}")
+        if args.dry_run:
+            return
         os.execvp("claude", cmd)
 
     if args.list:
@@ -923,9 +1032,9 @@ def main() -> None:
                     stats = get_stats(c.path)
                     md = to_markdown(turns, stats=stats)
                     name = _export_stem(c)
-                    ts = c.timestamp[:10] if c.timestamp else "unknown"
-                    filename = f"{ts}_{name}_{c.uuid[:8]}.md"
-                    (out_dir / filename).write_text(f"# {name} ({ts})\n**CWD:** {c.cwd}\n\n{md}", encoding="utf-8")
+                    date = _export_date(c)
+                    filename = f"{date}-{name}-{c.uuid[:8]}.md"
+                    (out_dir / filename).write_text(f"# {name} ({date})\n**CWD:** {c.cwd}\n\n{md}", encoding="utf-8")
                     total += 1
                     print(f"  [{total}] {filename}")
                 except Exception as e:
@@ -1013,6 +1122,30 @@ def main() -> None:
         from .analyzer import get_cost_summary
         print(f"\n--- Cost ---\n{get_cost_summary()}")
         return
+
+    if args.summarize:
+        from .summarize import summarize_all
+        from .analyzer import _load_env
+        _load_env()
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            print("GEMINI_API_KEY not set. Check .env or environment.")
+            raise SystemExit(1)
+        projects = scan_projects(extra_dirs=_extra_dirs)
+
+        def on_progress(done, total, skipped, result):
+            status = f"  [{done}/{total}]"
+            if result and result.startswith("ERROR"):
+                print(f"{status} {result}")
+            elif result:
+                print(f"{status} {result[:80]}")
+            else:
+                print(f"{status} (cached)", end="\r")
+
+        print(f"Summarizing sessions...")
+        done, skipped = summarize_all(projects, api_key, on_progress)
+        print(f"\nDone. {done} processed, {skipped} already cached.")
+        raise SystemExit(0)
 
     app = ConvoExplorer(extra_dirs=_extra_dirs)
     app.run()
