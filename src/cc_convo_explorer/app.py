@@ -56,8 +56,16 @@ def _group_key(display_path: str, source: str) -> tuple[str, str]:
 def _export_stem(meta: ConversationMeta) -> str:
     """Build a human-readable filename stem from conversation metadata.
 
-    Priority: slug > preview-derived > project+uuid fragment.
+    Priority: summary > slug > preview-derived > project+uuid fragment.
     """
+    try:
+        from .summarize import load_summaries
+        summary = load_summaries().get(meta.uuid)
+        if summary:
+            return summary
+    except Exception:
+        pass
+
     if meta.slug:
         return meta.slug
 
