@@ -1018,6 +1018,7 @@ def main() -> None:
 
     if args.handoff:
         from .scanner import scan_projects
+        from .summarize import load_summaries
         cwd = os.path.realpath(os.getcwd())
         projects = scan_projects(extra_dirs=_extra_dirs)
         cwd_convos = []
@@ -1028,7 +1029,43 @@ def main() -> None:
             print(f"No conversations found for {cwd}")
             return
         cwd_convos.sort(key=lambda c: c.timestamp or "", reverse=True)
-        meta = cwd_convos[0]
+        if len(cwd_convos) == 1:
+            meta = cwd_convos[0]
+        else:
+            summaries = load_summaries()
+            print(f"\n{len(cwd_convos)} conversations for {cwd}:\n")
+            for i, c in enumerate(cwd_convos):
+                ts = c.timestamp[:10] if c.timestamp else "?"
+                name = c.slug or c.uuid[:8]
+                summary = summaries.get(c.uuid, "")
+                preview = summary[:60] if summary else (c.preview or "")[:50]
+                size = c.path.stat().st_size if c.path.exists() else 0
+                tokens = size // 4
+                if tokens >= 1_000_000:
+                    tok_str = f"{tokens / 1_000_000:.1f}M"
+                elif tokens >= 1000:
+                    tok_str = f"{tokens // 1000}K"
+                else:
+                    tok_str = str(tokens)
+                marker = " *" if i == 0 else ""
+                print(f"  [{i + 1}] {ts}  {name:30s}  ~{tok_str:>6s} tok  {preview}{marker}")
+            print(f"\nEnter number [1-{len(cwd_convos)}] or press Enter for latest: ", end="", flush=True)
+            try:
+                choice = input().strip()
+            except (EOFError, KeyboardInterrupt):
+                return
+            if not choice:
+                meta = cwd_convos[0]
+            else:
+                try:
+                    idx = int(choice) - 1
+                    if not (0 <= idx < len(cwd_convos)):
+                        print(f"Invalid choice: {choice}")
+                        return
+                    meta = cwd_convos[idx]
+                except ValueError:
+                    print(f"Invalid choice: {choice}")
+                    return
         out_dir = Path("output")
         out_dir.mkdir(exist_ok=True)
         turns = parse_jsonl(meta.path, detail=args.detail)
