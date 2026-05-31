@@ -1,4 +1,4 @@
-"""Scan ~/.claude/projects/ and ~/.codex/sessions/ for conversation logs."""
+"""Scan ~/.claude/projects/, ~/.codex/sessions/, and ~/.pi/agent/sessions/ for conversation logs."""
 
 from __future__ import annotations
 
@@ -15,8 +15,20 @@ def _claude_projects_dir() -> Path:
 
 
 def _codex_sessions_dir() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    home = Path(codex_home).expanduser() if codex_home else Path(os.environ.get("USERPROFILE", Path.home())) / ".codex"
+    return home / "sessions"
+
+
+def _codex_conversations_dir() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    home = Path(codex_home).expanduser() if codex_home else Path(os.environ.get("USERPROFILE", Path.home())) / ".codex"
+    return home / "conversations"
+
+
+def _pi_sessions_dir() -> Path:
     home = Path(os.environ.get("USERPROFILE", Path.home()))
-    return home / ".codex" / "sessions"
+    return home / ".pi" / "agent" / "sessions"
 
 
 def _folder_to_path(folder_name: str) -> str:
@@ -80,14 +92,17 @@ def scan_projects(extra_dirs: list[Path] | None = None) -> list[Project]:
             ))
 
     # Scan Codex sessions — group by cwd into virtual "projects"
-    codex_base = _codex_sessions_dir()
-    if codex_base.is_dir():
-        codex_convos: list[ConversationMeta] = []
-        for jf in codex_base.rglob("*.jsonl"):
+    codex_bases = [(_codex_sessions_dir(), "*.jsonl"), (_codex_conversations_dir(), "*.json")]
+    codex_convos: list[ConversationMeta] = []
+    for codex_base, pattern in codex_bases:
+        if not codex_base.is_dir():
+            continue
+        for jf in codex_base.rglob(pattern):
             meta = get_meta(jf)
             if meta:
                 codex_convos.append(meta)
 
+    if codex_convos:
         # Group by cwd
         by_cwd: dict[str, list[ConversationMeta]] = {}
         for c in codex_convos:
@@ -100,6 +115,29 @@ def scan_projects(extra_dirs: list[Path] | None = None) -> list[Project]:
             projects.append(Project(
                 folder_name=folder,
                 display_path=f"[codex] {cwd}",
+                conversations=convos,
+            ))
+
+    # Scan Pi sessions — group by cwd-slug subdirectory
+    pi_base = _pi_sessions_dir()
+    if pi_base.is_dir():
+        pi_convos: list[ConversationMeta] = []
+        for jf in pi_base.rglob("*.jsonl"):
+            meta = get_meta(jf)
+            if meta:
+                pi_convos.append(meta)
+
+        by_cwd_pi: dict[str, list[ConversationMeta]] = {}
+        for c in pi_convos:
+            key = c.cwd or "(no project)"
+            by_cwd_pi.setdefault(key, []).append(c)
+
+        for cwd, convos in by_cwd_pi.items():
+            convos.sort(key=lambda c: c.timestamp, reverse=True)
+            folder = "pi:" + (Path(cwd).name if cwd and cwd != "(no project)" else "misc")
+            projects.append(Project(
+                folder_name=folder,
+                display_path=f"[pi] {cwd}",
                 conversations=convos,
             ))
 

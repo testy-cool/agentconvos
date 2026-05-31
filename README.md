@@ -1,8 +1,8 @@
 # cc-convo-explorer
 
-A terminal UI for browsing, searching, resuming, and analyzing your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) conversation history.
+A terminal UI for browsing, searching, resuming, and analyzing your Claude Code, Codex, and Pi conversation history.
 
-Claude Code stores every session as `.jsonl` files in `~/.claude/projects/`. This tool gives you a searchable, interactive interface to explore them all — across every project you've ever worked on.
+It auto-discovers Claude Code sessions from `~/.claude/projects/`, Codex sessions from `~/.codex/sessions/`, and Pi sessions from `~/.pi/agent/sessions/`, then gives you a searchable interface across every project you've worked on.
 
 ## Screenshot
 
@@ -28,10 +28,10 @@ Claude Code stores every session as `.jsonl` files in `~/.claude/projects/`. Thi
 
 ## Features
 
-- **Browse all projects** — auto-discovers every Claude Code project in `~/.claude/projects/`
+- **Browse all projects** — auto-discovers Claude Code, Codex, and Pi sessions
 - **Tree view** — expandable project nodes with conversation children, sorted by date
 - **Search/filter** — type to filter instantly, press Enter for deep full-text search
-- **Resume sessions** — press `R` to resume any conversation with `claude -r`
+- **Resume sessions** — press `R` to resume Claude Code and Codex conversations with their native CLI
 - **Preview** — select any conversation to see the full user/assistant exchange
 - **Multi-select** — select individual conversations, entire projects, or everything
 - **Token estimation** — see estimated token count for selected conversations
@@ -75,7 +75,7 @@ cc-convo-explorer
 | `S` | Toggle select on current item |
 | `Ctrl+A` | Select all |
 | `Ctrl+D` | Deselect all |
-| `R` | Resume conversation in Claude Code |
+| `R` | Resume conversation in Claude Code or Codex |
 | `E` | Export selected as individual markdown files |
 | `C` | Export selected as one combined markdown file |
 | `A` | Analyze with Gemini |
@@ -96,6 +96,7 @@ cc-convo-explorer --search "auth middleware"
 
 # Resume a conversation by slug or UUID
 cc-convo-explorer --resume reflective-herding-biscuit
+cc-convo-explorer --resume 019e4488
 
 # Export by file path, UUID prefix, or slug
 cc-convo-explorer --concat path/to/session.jsonl
@@ -156,7 +157,9 @@ For multi-conversation analysis, select multiple items and press `A` — Gemini 
 
 | What | Where |
 |------|-------|
-| Conversation logs | `~/.claude/projects/{project}/*.jsonl` |
+| Claude Code logs | `~/.claude/projects/{project}/*.jsonl` |
+| Codex logs | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` |
+| Pi logs | `~/.pi/agent/sessions/**/*.jsonl` |
 | Analyses | `~/.claude/convo-explorer/analyses/` |
 | Combined exports | `~/.claude/convo-explorer/exports/` |
 

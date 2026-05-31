@@ -1,7 +1,7 @@
 [project]
 name = "cc-convo-explorer"
 version = "0.1.0"
-description = "TUI for browsing, searching, resuming, and analyzing Claude Code conversations"
+description = "TUI for browsing, searching, resuming, and analyzing Claude Code, Codex, and Pi conversations"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

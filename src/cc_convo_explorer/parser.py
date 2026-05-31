@@ -1,9 +1,12 @@
-"""Parse Claude Code and Codex .jsonl conversation logs into structured data."""
+"""Parse Claude Code, Codex, and Pi .jsonl conversation logs into structured data."""
 
 from __future__ import annotations
 
 import json
+import os
+import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -50,17 +53,25 @@ class ConversationMeta:
     cwd: str
     preview: str  # first user message, truncated
     turn_count: int = 0
-    source: str = "claude"  # "claude" or "codex"
+    source: str = "claude"  # "claude", "codex", or "pi"
 
 
 def _detect_format(path: Path) -> str:
-    """Detect whether a .jsonl file is Claude Code or Codex format."""
+    """Detect whether a .jsonl file is Claude Code, Codex, or Pi format."""
     try:
+        if path.suffix == ".json":
+            with open(path, "r", encoding="utf-8") as f:
+                rec = json.load(f)
+            if isinstance(rec, dict) and isinstance(rec.get("items"), list):
+                return "codex_json"
+
         with open(path, "r", encoding="utf-8") as f:
             first_line = f.readline()
             if not first_line.strip():
                 first_line = f.readline()
             rec = json.loads(first_line)
+            if rec.get("type") == "session" and "version" in rec:
+                return "pi"
             if rec.get("type") == "session_meta" or (
                 rec.get("type") in ("event_msg", "response_item", "turn_context")
                 and "payload" in rec
@@ -76,6 +87,10 @@ def get_meta(path: Path) -> ConversationMeta | None:
     fmt = _detect_format(path)
     if fmt == "codex":
         return _get_meta_codex(path)
+    if fmt == "codex_json":
+        return _get_meta_codex_json(path)
+    if fmt == "pi":
+        return _get_meta_pi(path)
     return _get_meta_claude(path)
 
 
@@ -104,6 +119,105 @@ def _get_meta_claude(path: Path) -> ConversationMeta | None:
     return None
 
 
+_CODEX_THREAD_NAMES: dict[str, str] | None = None
+
+
+def _codex_home() -> Path:
+    home = os.environ.get("CODEX_HOME")
+    return Path(home).expanduser() if home else Path.home() / ".codex"
+
+
+def _codex_thread_names() -> dict[str, str]:
+    """Return Codex session id -> thread name from the lightweight local index."""
+    global _CODEX_THREAD_NAMES
+    if _CODEX_THREAD_NAMES is not None:
+        return _CODEX_THREAD_NAMES
+
+    names: dict[str, str] = {}
+    index_path = _codex_home() / "session_index.jsonl"
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                sid = rec.get("id")
+                thread_name = rec.get("thread_name")
+                if sid and thread_name:
+                    names[sid] = thread_name
+    except OSError:
+        pass
+    _CODEX_THREAD_NAMES = names
+    return names
+
+
+def _unix_to_iso(value) -> str:
+    if not isinstance(value, (int, float)):
+        return ""
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _codex_timestamp_from_rollout_stem(stem: str) -> str:
+    raw = stem[8:27]
+    if "T" not in raw:
+        return ""
+    date_part, time_part = raw.split("T", 1)
+    return f"{date_part}T{time_part.replace('-', ':')}Z"
+
+
+def _is_codex_context_block(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.startswith((
+        "<environment_context>",
+        "<permissions instructions>",
+        "<collaboration_mode>",
+        "<apps_instructions>",
+        "<skills_instructions>",
+        "<plugins_instructions>",
+    ))
+
+
+def _extract_codex_message_text(content, role: str = "") -> str:
+    """Extract human-readable text from Codex message content blocks."""
+    if isinstance(content, str):
+        text = content.strip()
+        return "" if _is_codex_context_block(text) else text
+    if not isinstance(content, list):
+        return ""
+
+    parts = []
+    saw_image = False
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type", "")
+        if btype in ("input_image", "image"):
+            saw_image = True
+            continue
+        if btype not in ("input_text", "output_text", "text"):
+            continue
+        text = (block.get("text") or "").strip()
+        if not text or _is_codex_context_block(text):
+            continue
+        text = re.sub(r"<image name=([^>]+)>", r"\1", text).replace("</image>", "")
+        text = re.sub(r"(\[Image[^\]]+\])\s+\1", r"\1", text)
+        parts.append(text)
+
+    if saw_image and not any(part.lower().startswith("image") or "[image" in part.lower() for part in parts):
+        parts.append("[image]")
+    return "\n".join(parts).strip()
+
+
+def _codex_user_dedupe_key(text: str) -> str:
+    cleaned = re.sub(r"\[Image[^\]]+\]|</?image[^>]*>", " ", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
+    return cleaned[:200] or text[:200]
+
+
 def _get_meta_codex(path: Path) -> ConversationMeta | None:
     """Extract metadata from a Codex .jsonl."""
     try:
@@ -111,8 +225,11 @@ def _get_meta_codex(path: Path) -> ConversationMeta | None:
         timestamp = ""
         cwd = ""
         preview = ""
+        preview_source = ""
         with open(path, "r", encoding="utf-8") as f:
+            line_count = 0
             for line in f:
+                line_count += 1
                 line = line.strip()
                 if not line:
                     continue
@@ -125,12 +242,20 @@ def _get_meta_codex(path: Path) -> ConversationMeta | None:
                     timestamp = payload.get("timestamp", rec.get("timestamp", ""))
                     cwd = payload.get("cwd", "")
 
-                if rtype == "event_msg" and payload.get("type") == "user_message" and not preview:
+                if rtype == "event_msg" and payload.get("type") == "user_message" and preview_source != "event":
                     msg = payload.get("message", "")
                     if isinstance(msg, str) and msg.strip() and len(msg.strip()) >= 3:
                         preview = msg.strip().replace("\n", " ")[:120]
+                        preview_source = "event"
 
-                if session_id and preview:
+                if rtype == "response_item" and payload.get("type") == "message" and not preview:
+                    if payload.get("role") == "user":
+                        msg = _extract_codex_message_text(payload.get("content", []), role="user")
+                        if msg:
+                            preview = msg.replace("\n", " ")[:120]
+                            preview_source = "response"
+
+                if session_id and preview and (preview_source == "event" or line_count > 50):
                     break
 
         if not session_id:
@@ -138,9 +263,90 @@ def _get_meta_codex(path: Path) -> ConversationMeta | None:
         if not timestamp:
             # Fall back to filename timestamp: rollout-2026-04-30T08-05-54-{uuid}.jsonl
             stem = path.stem
-            if stem.startswith("rollout-") and len(stem) > 30:
-                ts_part = stem[8:27].replace("-", ":", 2)  # rough ISO extraction
-                timestamp = ts_part
+            if stem.startswith("rollout-") and len(stem) > 28:
+                timestamp = _codex_timestamp_from_rollout_stem(stem)
+
+        return ConversationMeta(
+            path=path,
+            uuid=session_id,
+            slug=_codex_thread_names().get(session_id, ""),
+            timestamp=timestamp,
+            cwd=cwd,
+            preview=preview,
+            source="codex",
+        )
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _get_meta_codex_json(path: Path) -> ConversationMeta | None:
+    """Extract metadata from legacy Codex JSON conversation files."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rec = json.load(f)
+        session_id = rec.get("id", path.stem)
+        timestamp = _unix_to_iso(rec.get("created_at")) or _unix_to_iso(rec.get("updated_at")) or ""
+        preview = ""
+        for item in rec.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message" and item.get("role") == "user":
+                preview = _extract_codex_message_text(item.get("content", []), role="user")
+                if preview:
+                    preview = preview.replace("\n", " ")[:120]
+                    break
+
+        return ConversationMeta(
+            path=path,
+            uuid=session_id,
+            slug=rec.get("title") or _codex_thread_names().get(session_id, ""),
+            timestamp=timestamp,
+            cwd=rec.get("cwd", ""),
+            preview=preview,
+            source="codex",
+        )
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _get_meta_pi(path: Path) -> ConversationMeta | None:
+    """Extract metadata from a Pi .jsonl."""
+    try:
+        session_id = ""
+        timestamp = ""
+        cwd = ""
+        preview = ""
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                rtype = rec.get("type", "")
+
+                if rtype == "session":
+                    session_id = rec.get("id", path.stem)
+                    timestamp = rec.get("timestamp", "")
+                    cwd = rec.get("cwd", "")
+
+                if rtype == "message" and not preview:
+                    msg = rec.get("message", {})
+                    if msg.get("role") == "user":
+                        content = msg.get("content", [])
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text = block.get("text", "").strip()
+                                if text and len(text) >= 3:
+                                    preview = text.replace("\n", " ")[:120]
+                                    break
+
+                if session_id and preview:
+                    break
+
+        if not session_id:
+            session_id = path.stem
 
         return ConversationMeta(
             path=path,
@@ -149,7 +355,7 @@ def _get_meta_codex(path: Path) -> ConversationMeta | None:
             timestamp=timestamp,
             cwd=cwd,
             preview=preview,
-            source="codex",
+            source="pi",
         )
     except (json.JSONDecodeError, OSError):
         pass
@@ -224,6 +430,10 @@ def parse_jsonl(path: Path, detail: str = DETAIL_TEXT, last_n: int = 0) -> list[
     fmt = _detect_format(path)
     if fmt == "codex":
         turns = _parse_jsonl_codex(path, detail)
+    elif fmt == "codex_json":
+        turns = _parse_jsonl_codex_json(path, detail)
+    elif fmt == "pi":
+        turns = _parse_jsonl_pi(path, detail)
     else:
         turns = _parse_jsonl_claude(path, detail)
     if last_n > 0:
@@ -330,9 +540,16 @@ def _summarize_codex_tool(name: str, arguments: str) -> str:
         args = json.loads(arguments) if arguments else {}
     except json.JSONDecodeError:
         return arguments[:80] if arguments else "(no args)"
-    if name == "exec_command":
-        cmd = args.get("cmd", "")
+    if name in ("exec_command", "shell"):
+        cmd = args.get("cmd", args.get("command", ""))
+        if isinstance(cmd, list):
+            cmd = " ".join(str(part) for part in cmd)
         return f"`{cmd[:120]}`" if cmd else "(empty)"
+    if name == "write_stdin":
+        chars = args.get("chars", "")
+        session_id = args.get("session_id", "")
+        preview = str(chars).replace("\n", "\\n")[:80]
+        return f"session {session_id}: {preview}" if session_id else preview or "(empty)"
     if name == "update_plan":
         steps = args.get("plan", [])
         return f"{len(steps)} steps" if steps else "?"
@@ -394,6 +611,7 @@ def _parse_jsonl_codex(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
     turns: list[Turn] = []
     # Track seen agent messages to avoid duplicates (event_msg/agent_message vs response_item/message)
     seen_agent_texts: set[str] = set()
+    seen_user_texts: dict[str, int] = {}
 
     for rec in events:
         rtype = rec.get("type", "")
@@ -403,7 +621,13 @@ def _parse_jsonl_codex(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
         if rtype == "event_msg" and payload.get("type") == "user_message":
             msg = payload.get("message", "")
             if isinstance(msg, str) and msg.strip() and len(msg.strip()) >= 3:
-                turns.append(Turn(role="user", text=msg.strip()))
+                text = msg.strip()
+                text_key = _codex_user_dedupe_key(text)
+                if text_key in seen_user_texts:
+                    turns[seen_user_texts[text_key]] = Turn(role="user", text=text)
+                else:
+                    seen_user_texts[text_key] = len(turns)
+                    turns.append(Turn(role="user", text=text))
 
         # Agent messages from event_msg (prefer these over response_item duplicates)
         elif rtype == "event_msg" and payload.get("type") == "agent_message":
@@ -413,6 +637,15 @@ def _parse_jsonl_codex(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
                 if text_key not in seen_agent_texts:
                     seen_agent_texts.add(text_key)
                     turns.append(Turn(role="assistant", text=msg.strip()))
+
+        # User text from response_item/message (newer Codex records).
+        elif rtype == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+            text = _extract_codex_message_text(payload.get("content", []), role="user")
+            if text and len(text) >= 3:
+                text_key = _codex_user_dedupe_key(text)
+                if text_key not in seen_user_texts:
+                    seen_user_texts[text_key] = len(turns)
+                    turns.append(Turn(role="user", text=text))
 
         # Tool calls from response_item/function_call
         elif rtype == "response_item" and payload.get("type") == "function_call" and include_tools:
@@ -437,17 +670,180 @@ def _parse_jsonl_codex(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
 
         # Assistant text from response_item/message (fallback if not seen via agent_message)
         elif rtype == "response_item" and payload.get("type") == "message" and payload.get("role") == "assistant":
-            content = payload.get("content", [])
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "output_text":
-                    text_parts.append(block.get("text", ""))
-            text = "\n".join(text_parts).strip()
+            text = _extract_codex_message_text(payload.get("content", []), role="assistant")
             if text and len(text) > 10:
                 text_key = text[:200]
                 if text_key not in seen_agent_texts:
                     seen_agent_texts.add(text_key)
                     turns.append(Turn(role="assistant", text=text))
+
+    return turns
+
+
+def _parse_jsonl_codex_json(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
+    """Parse legacy Codex single-file JSON conversations into turns."""
+    include_tools = detail in (DETAIL_TOOLS, DETAIL_RESULTS, DETAIL_FULL)
+    include_results = detail in (DETAIL_RESULTS, DETAIL_FULL)
+    truncate_results = detail == DETAIL_RESULTS
+
+    with open(path, "r", encoding="utf-8") as f:
+        rec = json.load(f)
+    items = rec.get("items", [])
+    if not isinstance(items, list):
+        return []
+
+    tool_results: dict[str, str] = {}
+    if include_results:
+        for item in items:
+            if not isinstance(item, dict) or item.get("type") != "function_call_output":
+                continue
+            call_id = item.get("call_id", "")
+            output = item.get("output", "")
+            if call_id and isinstance(output, str):
+                tool_results[call_id] = output
+
+    turns: list[Turn] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype == "message":
+            role = item.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            text = _extract_codex_message_text(item.get("content", []), role=role)
+            if text and (role == "user" or len(text) > 10):
+                turns.append(Turn(role=role, text=text))
+        elif itype == "function_call" and include_tools:
+            name = item.get("name", "?")
+            arguments = item.get("arguments", "")
+            call_id = item.get("call_id", "")
+            tool_line = f"> **{name}**: {_summarize_codex_tool(name, arguments)}"
+            if include_results and call_id in tool_results:
+                result = tool_results[call_id]
+                if truncate_results and len(result) > RESULT_TRUNCATE * 2:
+                    head = result[:RESULT_TRUNCATE]
+                    tail = result[-RESULT_TRUNCATE:]
+                    result = f"{head}\n... ({len(result):,} chars total) ...\n{tail}"
+                tool_line += f"\n> ```\n> {result}\n> ```"
+            if turns and turns[-1].role == "assistant":
+                turns[-1] = Turn(role="assistant", text=turns[-1].text + "\n\n" + tool_line)
+            else:
+                turns.append(Turn(role="assistant", text=tool_line))
+
+    return turns
+
+
+def _summarize_pi_tool(name: str, arguments: dict) -> str:
+    """One-line summary for a Pi toolCall."""
+    if name == "Bash":
+        cmd = arguments.get("command", "")
+        return f"`{cmd[:120]}`" if cmd else "(empty)"
+    if name == "Read":
+        return arguments.get("file_path", "?")
+    if name == "Write":
+        return arguments.get("file_path", "?")
+    if name == "Edit":
+        fp = arguments.get("file_path", "?")
+        old = (arguments.get("old_string", "") or "")[:60].replace("\n", " ")
+        return f"{fp} — replace `{old}...`"
+    if name == "Grep":
+        pat = arguments.get("pattern", "?")
+        path = arguments.get("path", "")
+        return f'"{pat}"' + (f" in {path}" if path else "")
+    if name == "Glob":
+        return arguments.get("pattern", "?")
+    if name == "Agent":
+        desc = arguments.get("description", "")
+        prompt = arguments.get("prompt", "")[:100].replace("\n", " ")
+        return desc or prompt or "?"
+    keys = ", ".join(f"{k}={str(v)[:40]}" for k, v in list(arguments.items())[:4])
+    return keys or "(no args)"
+
+
+def _parse_jsonl_pi(path: Path, detail: str = DETAIL_TEXT) -> list[Turn]:
+    """Parse Pi format .jsonl into turns."""
+    include_tools = detail in (DETAIL_TOOLS, DETAIL_RESULTS, DETAIL_FULL)
+    include_results = detail in (DETAIL_RESULTS, DETAIL_FULL)
+    truncate_results = detail == DETAIL_RESULTS
+
+    records = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    # Build tool results map: tool_call_id -> result text
+    tool_results: dict[str, str] = {}
+    if include_results:
+        for rec in records:
+            if rec.get("type") != "message":
+                continue
+            msg = rec.get("message", {})
+            if msg.get("role") != "toolResult":
+                continue
+            call_id = msg.get("toolCallId", "")
+            content = msg.get("content", [])
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            if call_id:
+                tool_results[call_id] = "\n".join(text_parts)
+
+    turns: list[Turn] = []
+    for rec in records:
+        if rec.get("type") != "message":
+            continue
+        msg = rec.get("message", {})
+        role = msg.get("role", "")
+        content = msg.get("content", [])
+
+        if role == "user":
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            text = "\n".join(text_parts).strip()
+            if text and len(text) >= 3:
+                turns.append(Turn(role="user", text=text))
+
+        elif role == "assistant":
+            parts = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type", "")
+                if btype == "text":
+                    parts.append(block.get("text", ""))
+                elif btype == "toolCall" and include_tools:
+                    name = block.get("name", "?")
+                    arguments = block.get("arguments", {})
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except json.JSONDecodeError:
+                            arguments = {}
+                    call_id = block.get("id", "")
+                    summary = _summarize_pi_tool(name, arguments)
+                    tool_line = f"> **{name}**: {summary}"
+                    if include_results and call_id in tool_results:
+                        result = tool_results[call_id]
+                        if result:
+                            if truncate_results and len(result) > RESULT_TRUNCATE * 2:
+                                head = result[:RESULT_TRUNCATE]
+                                tail = result[-RESULT_TRUNCATE:]
+                                result = f"{head}\n... ({len(result):,} chars total) ...\n{tail}"
+                            tool_line += f"\n> ```\n> {result}\n> ```"
+                    parts.append(tool_line)
+            text = "\n\n".join(p for p in parts if p.strip())
+            if text and len(text) > 10:
+                turns.append(Turn(role="assistant", text=text))
 
     return turns
 
@@ -499,6 +895,10 @@ def get_stats(path: Path) -> ConversationStats:
     fmt = _detect_format(path)
     if fmt == "codex":
         return _get_stats_codex(path)
+    if fmt == "codex_json":
+        return _get_stats_codex_json(path)
+    if fmt == "pi":
+        return _get_stats_pi(path)
     return _get_stats_claude(path)
 
 
@@ -578,6 +978,61 @@ def _get_stats_codex(path: Path) -> ConversationStats:
             elif rtype == "response_item":
                 if payload.get("type") == "function_call":
                     stats.tool_calls += 1
+
+    return stats
+
+
+def _get_stats_codex_json(path: Path) -> ConversationStats:
+    """Extract stats from legacy Codex JSON format."""
+    stats = ConversationStats()
+    with open(path, "r", encoding="utf-8") as f:
+        rec = json.load(f)
+    stats.model = rec.get("model", "")
+    for item in rec.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "function_call":
+            stats.tool_calls += 1
+        usage = item.get("usage")
+        if isinstance(usage, dict):
+            stats.input_tokens += usage.get("input_tokens", usage.get("input", 0))
+            stats.output_tokens += usage.get("output_tokens", usage.get("output", 0))
+            stats.cache_read_tokens += usage.get("cached_input_tokens", usage.get("cache_read", 0))
+    return stats
+
+
+def _get_stats_pi(path: Path) -> ConversationStats:
+    """Extract stats from Pi format."""
+    stats = ConversationStats()
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            rtype = rec.get("type", "")
+
+            if rtype == "message":
+                msg = rec.get("message", {})
+                role = msg.get("role", "")
+                if role == "assistant":
+                    if not stats.model:
+                        stats.model = msg.get("model", "")
+                    usage = msg.get("usage", {})
+                    if usage:
+                        stats.input_tokens += usage.get("input", usage.get("inputTokens", 0))
+                        stats.output_tokens += usage.get("output", usage.get("outputTokens", 0))
+                        stats.cache_read_tokens += usage.get("cacheRead", usage.get("cacheReadTokens", 0))
+                        stats.cache_create_tokens += usage.get("cacheWrite", usage.get("cacheWriteTokens", 0))
+                    content = msg.get("content", [])
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "toolCall":
+                                stats.tool_calls += 1
 
     return stats
 
