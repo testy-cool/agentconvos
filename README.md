@@ -1,4 +1,4 @@
-# cc-convo-explorer
+# convolog
 
 A terminal UI for browsing, searching, resuming, and analyzing your Claude Code, Codex, and Pi conversation history.
 
@@ -7,7 +7,7 @@ It auto-discovers Claude Code sessions from `~/.claude/projects/`, Codex session
 ## Screenshot
 
 ```
- cc-convo-explorer
+ convolog
  ┌─ PROJECTS (618) ───────────────┐┌─ PREVIEW (25 turns) ──────────────────────┐
  │ Filter convos... (Enter=search) ││                                            │
  │                                  ││ ## ticklish-twirling-hejlsberg             │
@@ -47,11 +47,11 @@ It auto-discovers Claude Code sessions from `~/.claude/projects/`, Codex session
 
 ```bash
 # Install globally (recommended)
-uv tool install "cc-convo-explorer[ai] @ git+https://github.com/testy-cool/cc-convo-explorer.git"
+uv tool install "convolog[ai] @ git+https://github.com/testy-cool/convolog.git"
 
 # Or clone and install locally
-git clone https://github.com/testy-cool/cc-convo-explorer.git
-cd cc-convo-explorer
+git clone https://github.com/testy-cool/convolog.git
+cd convolog
 uv sync --extra ai
 ```
 
@@ -62,7 +62,7 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 ### TUI (interactive)
 
 ```bash
-cc-convo-explorer
+convolog
 ```
 
 **Keyboard shortcuts:**
@@ -90,46 +90,46 @@ cc-convo-explorer
 
 ```bash
 # List all projects and conversations
-cc-convo-explorer --list
+convolog --list
 
 # Search across all conversations
-cc-convo-explorer --search "auth middleware"
+convolog --search "auth middleware"
 
 # Resume a conversation by slug or UUID
-cc-convo-explorer --resume reflective-herding-biscuit
-cc-convo-explorer --resume 019e4488
+convolog --resume reflective-herding-biscuit
+convolog --resume 019e4488
 
 # Handoff to a new session (exports context, launches new CLI)
-cc-convo-explorer --handoff              # latest conversation in cwd
-cc-convo-explorer --handoff select       # pick from list
-cc-convo-explorer --handoff codex        # latest Codex conversation in cwd
+convolog --handoff              # latest conversation in cwd
+convolog --handoff select       # pick from list
+convolog --handoff codex        # latest Codex conversation in cwd
 
 # Export by file path, UUID prefix, or slug
-cc-convo-explorer --concat path/to/session.jsonl
-cc-convo-explorer --concat 315ce500
-cc-convo-explorer --concat reflective-herding-biscuit
+convolog --concat path/to/session.jsonl
+convolog --concat 315ce500
+convolog --concat reflective-herding-biscuit
 
 # Analyze with Gemini
 export GEMINI_API_KEY=your-key-here
-cc-convo-explorer --analyze 315ce5 reflective-herding --model gemini-3.1-pro-preview
+convolog --analyze 315ce5 reflective-herding --model gemini-3.1-pro-preview
 
 # Custom analysis prompt (inline or from file)
-cc-convo-explorer --analyze 315ce5 --prompt "List all tools used.\n\n{content}"
-cc-convo-explorer --analyze 315ce5 --prompt my-prompt.txt
+convolog --analyze 315ce5 --prompt "List all tools used.\n\n{content}"
+convolog --analyze 315ce5 --prompt my-prompt.txt
 
 # Detail levels: text (default), tools, results, full
-cc-convo-explorer --concat 315ce5 --detail tools     # +tool call summaries
-cc-convo-explorer --concat 315ce5 --detail results   # +truncated tool output
-cc-convo-explorer --concat 315ce5 --detail full      # +everything untruncated
+convolog --concat 315ce5 --detail tools     # +tool call summaries
+convolog --concat 315ce5 --detail results   # +truncated tool output
+convolog --concat 315ce5 --detail full      # +everything untruncated
 
 # Filter by agent and date range
-cc-convo-explorer --list --source codex --after 2026-05-01
-cc-convo-explorer --search "auth" --source claude --before 2026-05-15
+convolog --list --source codex --after 2026-05-01
+convolog --search "auth" --source claude --before 2026-05-15
 
 # JSON output for piping to other tools
-cc-convo-explorer --list --json
-cc-convo-explorer --list --source codex --json | jq '.projects[].conversations[].uuid'
-cc-convo-explorer --search "middleware" --json | jq '.hits[].snippet'
+convolog --list --json
+convolog --list --source codex --json | jq '.projects[].conversations[].uuid'
+convolog --search "middleware" --json | jq '.hits[].snippet'
 ```
 
 #### Detail levels
@@ -173,7 +173,7 @@ For multi-conversation analysis, select multiple items and press `A` — Gemini 
 Use as a building block in other tools:
 
 ```python
-from cc_convo_explorer import scan_projects, parse_jsonl, get_meta, search, get_stats
+from convolog import scan_projects, parse_jsonl, get_meta, search, get_stats
 
 # Discover all sessions across all agents
 projects = scan_projects()
