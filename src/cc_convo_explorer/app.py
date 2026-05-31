@@ -1,4 +1,4 @@
-"""Textual TUI for browsing Claude Code conversations."""
+"""Textual TUI for browsing Claude Code, Codex, and Pi conversations."""
 
 from __future__ import annotations
 
@@ -30,14 +30,23 @@ from textual.widgets.tree import TreeNode
 from .scanner import Project, scan_projects
 
 
+_SOURCE_STYLE = {
+    "claude": ("Claude Code", "bold #cc5500"),
+    "codex": ("Codex", "bold #00cc66"),
+    "pi": ("Pi", "bold #7c6fff"),
+}
+_SOURCE_ORDER = ["claude", "codex", "pi"]
+
+
 def _group_key(display_path: str, source: str) -> tuple[str, str]:
     """Return (group_name, relative_label) for a project path."""
+    source_prefix = f"[{source}] "
+    if display_path.startswith(source_prefix):
+        display_path = display_path[len(source_prefix):]
+
     home = str(Path.home())
     if display_path.startswith(home):
         display_path = "~" + display_path[len(home):]
-
-    if source == "codex":
-        return "[codex]", display_path
 
     if display_path.startswith("~/Work"):
         rest = display_path[len("~/Work/"):]
@@ -47,10 +56,46 @@ def _group_key(display_path: str, source: str) -> tuple[str, str]:
         group = "/".join(parts[:2])  # e.g. "~/.claude"
         rest = "/".join(parts[2:])
         return group, rest or display_path
+    if display_path == "~":
+        return "~", "~"
     if display_path.startswith("~/"):
         return "~", display_path[len("~/"):]
 
     return "Other", display_path
+
+
+def _project_real_path(project: Project, convos: list[ConversationMeta] | None = None) -> str:
+    """Return the real cwd for source-prefixed virtual projects."""
+    if convos:
+        for convo in convos:
+            if convo.cwd:
+                return convo.cwd
+    if project.conversations:
+        for convo in project.conversations:
+            if convo.cwd:
+                return convo.cwd
+    display_path = project.display_path
+    for prefix in ("[codex] ", "[pi] "):
+        if display_path.startswith(prefix):
+            return display_path[len(prefix):]
+    return display_path
+
+
+def _is_current_project(cwd: str, project_path: str) -> bool:
+    if not project_path or project_path == "(no project)":
+        return False
+    project_path = os.path.realpath(os.path.expanduser(project_path))
+    cwd = os.path.realpath(cwd)
+    return cwd == project_path
+
+
+def _fmt_ts(ts: str, date_only: bool = False) -> str:
+    """Format ISO timestamp: '2026-05-17 14:30' or '2026-05-17'."""
+    if not ts:
+        return ""
+    if date_only or len(ts) < 16:
+        return ts[:10]
+    return ts[:16].replace("T", " ")
 
 
 def _export_stem(meta: ConversationMeta) -> str:
@@ -198,8 +243,8 @@ class ConvoExplorer(App):
         Binding("o", "open_folder", "Open folder", priority=False),
         Binding("escape", "cancel", "Cancel", priority=True),
         Binding("slash", "search", "Search", priority=False),
-        Binding("r", "resume", "Resume in Claude", priority=False),
-        Binding("h", "handoff", "Handoff to new Claude", priority=False),
+        Binding("r", "resume", "Resume session", priority=False),
+        Binding("h", "handoff", "Handoff to new session", priority=False),
     ]
 
     TITLE = "cc-convo-explorer"
@@ -247,6 +292,8 @@ class ConvoExplorer(App):
         tree = self.query_one("#nav-tree", Tree)
         tree.show_root = False
         tree.guide_depth = 3
+        self.query_one("#status-bar", Static).update(" Scanning conversations...")
+        self.query_one("#left-title", Static).update(" PROJECTS (loading...)")
         self.load_projects()
         tree.focus()
 
@@ -271,14 +318,13 @@ class ConvoExplorer(App):
     @work(thread=True)
     def load_projects(self) -> None:
         projects = scan_projects(extra_dirs=self._extra_dirs)
-        # Build search cache: last 10 turns per conversation
+        # Build search cache: full conversation text
         cache = {}
         for p in projects:
             for c in p.conversations:
                 try:
                     turns = parse_jsonl(c.path)
-                    tail = turns[-10:] if len(turns) > 10 else turns
-                    cache[c.uuid] = "\n".join(t.text for t in tail).lower()
+                    cache[c.uuid] = "\n".join(t.text for t in turns).lower()
                 except Exception:
                     cache[c.uuid] = ""
         self._search_cache = cache
@@ -315,7 +361,9 @@ class ConvoExplorer(App):
             pass
 
         cwd = os.getcwd()
-        groups: dict[str, list[tuple[str, object]]] = {}
+
+        # Group: source → path_group → [(rel_label, proj, convos)]
+        by_source: dict[str, dict[str, list[tuple[str, Project, list]]]] = {}
         filtered_count = 0
 
         for proj in projects:
@@ -333,75 +381,127 @@ class ConvoExplorer(App):
 
             source = convos[0].source if convos else "claude"
             gkey, rel_label = _group_key(proj.display_path, source)
-            groups.setdefault(gkey, []).append((rel_label, proj, convos))
+            by_source.setdefault(source, {}).setdefault(gkey, []).append(
+                (rel_label, proj, convos)
+            )
             filtered_count += len(convos)
 
         self.query_one("#left-title", Static).update(
             f" PROJECTS ({filtered_count})"
         )
 
-        group_order = ["~/Work"]
-        for k in sorted(groups.keys()):
-            if k not in group_order and k not in ("[codex]", "Other"):
-                group_order.append(k)
-        if "[codex]" in groups:
-            group_order.append("[codex]")
-        if "Other" in groups:
-            group_order.append("Other")
+        # Find which source/group contains the cwd project
+        cwd_source = None
+        cwd_path_group = None
+        for source, path_groups in by_source.items():
+            for gkey, items in path_groups.items():
+                for _, p, cv in items:
+                    if _is_current_project(cwd, _project_real_path(p, cv)):
+                        cwd_source = source
+                        cwd_path_group = gkey
+                        break
+                if cwd_source:
+                    break
+            if cwd_source:
+                break
 
-        for gkey in group_order:
-            if gkey not in groups:
-                continue
-            items = groups[gkey]
-            group_node = tree.root.add(
-                gkey,
-                data=NodeData(kind="group"),
-                expand=any(
-                    cwd == p.display_path or cwd.startswith(p.display_path + "/")
-                    for _, p, _ in items
-                ) or bool(ft),
+        # Order sources: cwd source first, then standard order
+        source_order = []
+        if cwd_source:
+            source_order.append(cwd_source)
+        for s in _SOURCE_ORDER:
+            if s not in source_order and s in by_source:
+                source_order.append(s)
+
+        total_projects = 0
+        for source in source_order:
+            name, style = _SOURCE_STYLE.get(source, (source, "bold"))
+            path_groups = by_source[source]
+            src_count = sum(
+                len(cv) for items in path_groups.values() for _, _, cv in items
             )
 
-            for rel_label, proj, convos in sorted(items, key=lambda x: x[0]):
-                is_cwd = cwd == proj.display_path
-                date_str = convos[0].timestamp[:10] if convos else ""
-                count = len(convos)
+            src_label = Text()
+            src_label.append(name, style)
+            src_label.append(f"  ({src_count})", "dim")
 
-                plabel = Text()
-                if is_cwd:
-                    plabel.append("● ", "bold cyan")
-                plabel.append(f"{rel_label}  ({count})  {date_str}")
-                if self._is_analyzed(proj.folder_name):
-                    plabel.append(" ★", "yellow")
+            is_cwd_source = source == cwd_source
+            source_node = tree.root.add(
+                src_label,
+                data=NodeData(kind="group"),
+                expand=is_cwd_source or bool(ft),
+            )
 
-                pnode = group_node.add(
-                    plabel,
-                    data=NodeData(kind="project", project=proj, is_cwd=is_cwd),
-                    expand=is_cwd or bool(ft),
+            # Order path groups: cwd group first, ~/Work, then sorted, Other last
+            pg_order: list[str] = []
+            if is_cwd_source and cwd_path_group and cwd_path_group in path_groups:
+                pg_order.append(cwd_path_group)
+            if "~/Work" in path_groups and "~/Work" not in pg_order:
+                pg_order.append("~/Work")
+            for k in sorted(path_groups.keys()):
+                if k not in pg_order and k != "Other":
+                    pg_order.append(k)
+            if "Other" in path_groups and "Other" not in pg_order:
+                pg_order.append("Other")
+
+            for gkey in pg_order:
+                items = path_groups[gkey]
+                has_cwd = any(
+                    _is_current_project(cwd, _project_real_path(p, cv))
+                    for _, p, cv in items
                 )
 
-                for c in convos:
-                    d = c.timestamp[:10] if c.timestamp else ""
-                    slug = c.slug or c.uuid[:8]
-                    summary = summaries.get(c.uuid, "")
-                    if summary:
-                        preview = summary[:60]
-                    else:
-                        preview = (c.preview or "")[:45]
-                    pnode.add_leaf(
-                        f"  {d}  {slug}  {preview}",
-                        data=NodeData(kind="convo", meta=c, project=proj),
+                pg_node = source_node.add(
+                    Text(gkey),
+                    data=NodeData(kind="group"),
+                    expand=has_cwd or bool(ft),
+                )
+
+                def _proj_sort_key(item):
+                    _, p, cv = item
+                    is_cur = _is_current_project(cwd, _project_real_path(p, cv))
+                    return (not is_cur, item[0])
+
+                for rel_label, proj, convos in sorted(items, key=_proj_sort_key):
+                    project_path = _project_real_path(proj, convos)
+                    is_cwd = _is_current_project(cwd, project_path)
+                    date_str = _fmt_ts(convos[0].timestamp) if convos else ""
+                    count = len(convos)
+                    total_projects += 1
+
+                    plabel = Text()
+                    if is_cwd:
+                        plabel.append("● ", "bold cyan")
+                    plabel.append(f"{rel_label}  ({count})  {date_str}")
+                    if self._is_analyzed(proj.folder_name):
+                        plabel.append(" ★", "yellow")
+
+                    pnode = pg_node.add(
+                        plabel,
+                        data=NodeData(kind="project", project=proj, is_cwd=is_cwd),
+                        expand=is_cwd or bool(ft),
                     )
 
-        shown = sum(len(items) for items in groups.values())
+                    for c in convos:
+                        d = _fmt_ts(c.timestamp)
+                        slug = c.slug or c.uuid[:8]
+                        summary = summaries.get(c.uuid, "")
+                        if summary:
+                            preview = summary[:60]
+                        else:
+                            preview = (c.preview or "")[:45]
+                        pnode.add_leaf(
+                            Text(f"  {d}  {slug}  {preview}"),
+                            data=NodeData(kind="convo", meta=c, project=proj),
+                        )
+
         self.query_one("#status-bar", Static).update(
-            f" {shown} projects · {filtered_count} conversations · / search · S select · Tab switch · A analyze · E export"
+            f" {total_projects} projects · {filtered_count} conversations · / search · S select · Tab switch · A analyze · E export"
         )
 
     def _refresh_analyzed_markers(self) -> None:
         """Re-scan analyses dir and update ★ markers on project nodes."""
-        tree = self.query_one("#nav-tree", Tree)
-        for pnode in tree.root.children:
+        for pnode in self._walk_tree_nodes():
             data: NodeData = pnode.data
             if not data or data.kind != "project" or not data.project:
                 continue
@@ -463,8 +563,7 @@ class ConvoExplorer(App):
             # Auto-preview if filter narrows to exactly 1 conversation
             tree = self.query_one("#nav-tree", Tree)
             all_convos = [
-                cnode for pnode in tree.root.children
-                for cnode in pnode.children
+                cnode for cnode in self._walk_tree_nodes(tree.root)
                 if cnode.data and cnode.data.kind == "convo"
             ]
             if len(all_convos) == 1:
@@ -476,23 +575,31 @@ class ConvoExplorer(App):
 
     # --- Multi-select ---
 
+    def _walk_tree_nodes(self, node: TreeNode | None = None):
+        """Yield every visible tree node below node."""
+        if node is None:
+            node = self.query_one("#nav-tree", Tree).root
+        for child in node.children:
+            yield child
+            yield from self._walk_tree_nodes(child)
+
     def _get_selected_nodes(self) -> list[NodeData]:
         """Collect all nodes marked as selected."""
-        tree = self.query_one("#nav-tree", Tree)
         selected = []
-        for pnode in tree.root.children:
-            pd: NodeData = pnode.data
-            if pd and pd.selected:
-                # Whole project selected — include all its convos
-                for cnode in pnode.children:
-                    cd: NodeData = cnode.data
-                    if cd and cd.meta:
+        seen_paths = set()
+        for node in self._walk_tree_nodes():
+            data: NodeData = node.data
+            if not data:
+                continue
+            if data.kind == "project" and data.selected:
+                for child in self._walk_tree_nodes(node):
+                    cd: NodeData = child.data
+                    if cd and cd.kind == "convo" and cd.meta and cd.meta.path not in seen_paths:
                         selected.append(cd)
-            else:
-                for cnode in pnode.children:
-                    cd: NodeData = cnode.data
-                    if cd and cd.selected and cd.meta:
-                        selected.append(cd)
+                        seen_paths.add(cd.meta.path)
+            elif data.kind == "convo" and data.selected and data.meta and data.meta.path not in seen_paths:
+                selected.append(data)
+                seen_paths.add(data.meta.path)
         return selected
 
     def _update_node_label(self, node: TreeNode) -> None:
@@ -522,9 +629,9 @@ class ConvoExplorer(App):
         data.selected = not data.selected
         self._update_node_label(node)
 
-        # If toggling a project, toggle all its children too
-        if data.kind == "project":
-            for child in node.children:
+        # If toggling a group/project, toggle all descendants too.
+        if data.kind in ("group", "project"):
+            for child in self._walk_tree_nodes(node):
                 cd: NodeData = child.data
                 if cd:
                     cd.selected = data.selected
@@ -533,31 +640,19 @@ class ConvoExplorer(App):
         self._update_selection_count()
 
     def action_select_all(self) -> None:
-        tree = self.query_one("#nav-tree", Tree)
-        for pnode in tree.root.children:
-            pd: NodeData = pnode.data
-            if pd:
-                pd.selected = True
-                self._update_node_label(pnode)
-                for cnode in pnode.children:
-                    cd: NodeData = cnode.data
-                    if cd:
-                        cd.selected = True
-                        self._update_node_label(cnode)
+        for node in self._walk_tree_nodes():
+            data: NodeData = node.data
+            if data:
+                data.selected = True
+                self._update_node_label(node)
         self._update_selection_count()
 
     def action_deselect_all(self) -> None:
-        tree = self.query_one("#nav-tree", Tree)
-        for pnode in tree.root.children:
-            pd: NodeData = pnode.data
-            if pd:
-                pd.selected = False
-                self._update_node_label(pnode)
-                for cnode in pnode.children:
-                    cd: NodeData = cnode.data
-                    if cd:
-                        cd.selected = False
-                        self._update_node_label(cnode)
+        for node in self._walk_tree_nodes():
+            data: NodeData = node.data
+            if data:
+                data.selected = False
+                self._update_node_label(node)
         self._update_selection_count()
 
     def _estimate_tokens(self, nodes: list[NodeData]) -> str:
@@ -892,8 +987,8 @@ class ConvoExplorer(App):
         if not self.current_meta:
             self.notify("Select a conversation first", severity="warning")
             return
-        if self.current_meta.source == "codex":
-            self.notify("Resume not supported for Codex conversations", severity="warning")
+        if self.current_meta.source == "pi":
+            self.notify(f"Resume not supported for {self.current_meta.source.title()} conversations", severity="warning")
             return
         self._resume_meta = self.current_meta
         self.exit()
@@ -977,7 +1072,9 @@ def _pick_conversation(convos: list, cwd: str):
         else:
             tok_str = str(tokens)
         marker = " *" if i == 0 else ""
-        print(f"  [{i + 1}] {ts}  {name:30s}  ~{tok_str:>6s} tok  {preview}{marker}")
+        src_tag = f"[{c.source}]" if c.source != "claude" else ""
+        src_pad = f" {src_tag:7s}" if src_tag else "        "
+        print(f"  [{i + 1}] {ts}{src_pad}  {name:30s}  ~{tok_str:>6s} tok  {preview}{marker}")
     print(f"\nEnter number [1-{len(convos)}] or press Enter for latest: ", end="", flush=True)
     try:
         choice = input().strip()
@@ -996,9 +1093,29 @@ def _pick_conversation(convos: list, cwd: str):
         return None
 
 
+def _handoff_cmd(source: str, message: str, extra_args: list[str] | None = None) -> list[str]:
+    """Build a handoff command for the given source CLI."""
+    extra = extra_args or []
+    if source == "codex":
+        return ["codex", "--dangerously-bypass-approvals-and-sandbox"] + extra + [message]
+    if source == "pi":
+        return ["pi"] + extra + [message]
+    return ["claude", "--dangerously-skip-permissions"] + extra + [message]
+
+
+def _resume_cmd(source: str, uuid: str, extra_args: list[str] | None = None) -> list[str] | None:
+    """Build a resume command, or None if the source doesn't support it."""
+    extra = extra_args or []
+    if source == "claude":
+        return ["claude", "--dangerously-skip-permissions", "-r", uuid] + extra
+    if source == "codex":
+        return ["codex", "resume", "--dangerously-bypass-approvals-and-sandbox"] + extra + [uuid]
+    return None
+
+
 def main() -> None:
     import argparse
-    parser = argparse.ArgumentParser(description="Browse and analyze Claude Code and Codex conversations")
+    parser = argparse.ArgumentParser(description="Browse and analyze Claude Code, Codex, and Pi conversations")
     parser.add_argument("--analyze", nargs="+", metavar="ID_OR_PATH", help="Analyze conversations (JSONL paths, UUIDs, or slugs)")
     parser.add_argument("--concat", nargs="+", metavar="ID_OR_PATH", help="Export concatenated markdown (JSONL paths, UUIDs, or slugs)")
     parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL, help="Gemini model")
@@ -1009,10 +1126,10 @@ def main() -> None:
     parser.add_argument("--list", action="store_true", help="List all projects and conversations")
     parser.add_argument("--show", nargs="+", metavar="ID_OR_PATH", help="Preview conversation (first ~10K words)")
     parser.add_argument("--open", action="store_true", help="Open in Sublime Text (use with --show or --concat)")
-    parser.add_argument("--resume", nargs=1, metavar="ID_OR_PATH", help="Resume a conversation with claude -r (add extra claude flags after --)")
-    parser.add_argument("--dry-run", action="store_true", help="Print the command instead of running it (use with --resume)")
-    parser.add_argument("--handoff", nargs="?", const="latest", default=None, metavar="select",
-                        help="Export CWD conversation and start new Claude session (add 'select' to pick from list)")
+    parser.add_argument("--resume", nargs=1, metavar="ID_OR_PATH", help="Resume a conversation with its native CLI (add extra CLI flags after --)")
+    parser.add_argument("--dry-run", action="store_true", help="Print the command instead of running it (use with --resume/--handoff)")
+    parser.add_argument("--handoff", nargs="?", const="latest", default=None, metavar="MODE",
+                        help="Export CWD conversation and start new session. Modes: latest (default), select (pick from list), claude/codex/pi (latest from that source)")
     parser.add_argument("--export-all", metavar="DIR", help="Export every conversation as individual markdown files to DIR")
     parser.add_argument("--projects-dir", nargs="+", metavar="DIR", help="Additional projects directories to scan (e.g. copied from other machines)")
     parser.add_argument("--summarize", action="store_true",
@@ -1050,11 +1167,10 @@ def main() -> None:
         if not meta:
             print(f"Error: could not read metadata from {paths[0]}")
             return
-        if meta.source == "codex":
-            print("Error: resume not supported for Codex conversations")
+        cmd = _resume_cmd(meta.source, meta.uuid, remaining)
+        if cmd is None:
+            print(f"Error: resume not supported for {meta.source.title()} conversations (use handoff instead)")
             return
-        # Pass any extra/unknown args straight to claude
-        cmd = ["claude", "--dangerously-skip-permissions", "-r", meta.uuid] + remaining
         name = meta.slug or meta.uuid[:8]
         print(f"Resuming: {name} ({meta.timestamp[:10]})")
         if meta.cwd:
@@ -1064,7 +1180,7 @@ def main() -> None:
             return
         if meta.cwd and os.path.isdir(meta.cwd):
             os.chdir(meta.cwd)
-        os.execvp("claude", cmd)
+        os.execvp(cmd[0], cmd)
 
     if args.handoff is not None:
         from .scanner import scan_projects
@@ -1072,10 +1188,15 @@ def main() -> None:
         projects = scan_projects(extra_dirs=_extra_dirs)
         cwd_convos = []
         for p in projects:
-            if os.path.realpath(p.display_path) == cwd:
-                cwd_convos.extend(p.conversations)
+            for c in p.conversations:
+                if c.cwd and os.path.realpath(c.cwd) == cwd:
+                    cwd_convos.append(c)
+        source_filter = args.handoff if args.handoff in ("claude", "codex", "pi") else None
+        if source_filter:
+            cwd_convos = [c for c in cwd_convos if c.source == source_filter]
         if not cwd_convos:
-            print(f"No conversations found for {cwd}")
+            label = f" from {source_filter}" if source_filter else ""
+            print(f"No conversations found{label} for {cwd}")
             return
         cwd_convos.sort(key=lambda c: c.timestamp or "", reverse=True)
         if args.handoff == "select" and len(cwd_convos) > 1:
@@ -1095,12 +1216,12 @@ def main() -> None:
         name = meta.slug or meta.uuid[:8]
         print(f"Exported: {name} → {out_path}")
         message = f"Read the file {out_path.resolve()} for context from our last session, then summarize what we were working on and ask how to continue."
-        cmd = ["claude", "--dangerously-skip-permissions"] + remaining + [message]
+        cmd = _handoff_cmd(meta.source, message, remaining)
         display = " ".join(cmd[:-1]) + f' "{message}"'
         print(f"  {display}")
         if args.dry_run:
             return
-        os.execvp("claude", cmd)
+        os.execvp(cmd[0], cmd)
 
     if args.list:
         from .scanner import scan_projects
@@ -1275,15 +1396,18 @@ def main() -> None:
     # After TUI exits, check if user wants to resume a conversation
     if app._resume_meta:
         meta = app._resume_meta
-        name = meta.slug or meta.uuid[:8]
-        cmd = ["claude", "--dangerously-skip-permissions", "-r", meta.uuid] + remaining
-        print(f"Resuming: {name} ({meta.timestamp[:10]})")
-        if meta.cwd:
-            print(f"  cd {meta.cwd}")
-        if meta.cwd and os.path.isdir(meta.cwd):
-            os.chdir(meta.cwd)
-        print(f"  {' '.join(cmd)}")
-        os.execvp("claude", cmd)
+        cmd = _resume_cmd(meta.source, meta.uuid, remaining)
+        if cmd is None:
+            print(f"Resume not supported for {meta.source.title()} — use handoff instead")
+        else:
+            name = meta.slug or meta.uuid[:8]
+            print(f"Resuming: {name} ({meta.timestamp[:10]})")
+            if meta.cwd:
+                print(f"  cd {meta.cwd}")
+            if meta.cwd and os.path.isdir(meta.cwd):
+                os.chdir(meta.cwd)
+            print(f"  {' '.join(cmd)}")
+            os.execvp(cmd[0], cmd)
 
     if app._handoff_meta:
         meta = app._handoff_meta
@@ -1298,12 +1422,12 @@ def main() -> None:
         name = meta.slug or meta.uuid[:8]
         print(f"Exported: {name} → {out_path}")
         message = f"Read the file {out_path.resolve()} for context from our last session, then summarize what we were working on and ask how to continue."
-        cmd = ["claude", "--dangerously-skip-permissions"] + remaining + [message]
+        cmd = _handoff_cmd(meta.source, message, remaining)
         display = " ".join(cmd[:-1]) + f' "{message}"'
         print(f"  {display}")
         if meta.cwd and os.path.isdir(meta.cwd):
             os.chdir(meta.cwd)
-        os.execvp("claude", cmd)
+        os.execvp(cmd[0], cmd)
 
 
 def _open_in_editor(path):
