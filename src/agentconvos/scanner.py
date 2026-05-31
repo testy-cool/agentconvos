@@ -2,11 +2,65 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .parser import ConversationMeta, get_meta
+
+_CACHE_PATH = Path(os.environ.get("USERPROFILE", Path.home())) / ".claude" / "convo-explorer" / "meta-cache.json"
+
+
+def _load_cache() -> dict:
+    try:
+        return json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_cache(cache: dict) -> None:
+    _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CACHE_PATH.write_text(json.dumps(cache), encoding="utf-8")
+
+
+def _get_meta_cached(path: Path, cache: dict) -> ConversationMeta | None:
+    """Get metadata, using cache when file size+mtime haven't changed."""
+    key = str(path)
+    try:
+        stat = path.stat()
+        size = stat.st_size
+        mtime = stat.st_mtime
+    except OSError:
+        return None
+
+    cached = cache.get(key)
+    if cached and cached.get("size") == size and cached.get("mtime") == mtime:
+        return ConversationMeta(
+            path=path,
+            uuid=cached["uuid"],
+            slug=cached.get("slug", ""),
+            timestamp=cached.get("timestamp", ""),
+            cwd=cached.get("cwd", ""),
+            preview=cached.get("preview", ""),
+            source=cached.get("source", "claude"),
+            git_branch=cached.get("git_branch", ""),
+        )
+
+    meta = get_meta(path)
+    if meta:
+        cache[key] = {
+            "size": size,
+            "mtime": mtime,
+            "uuid": meta.uuid,
+            "slug": meta.slug,
+            "timestamp": meta.timestamp,
+            "cwd": meta.cwd,
+            "preview": meta.preview,
+            "source": meta.source,
+            "git_branch": meta.git_branch,
+        }
+    return meta
 
 
 def _claude_projects_dir() -> Path:
@@ -73,6 +127,7 @@ def scan_projects(
         before: Only include conversations before this ISO date.
     """
     projects: list[Project] = []
+    cache = _load_cache()
 
     # Scan Claude Code projects
     bases = [_claude_projects_dir()]
@@ -90,7 +145,7 @@ def scan_projects(
 
             convos = []
             for jf in jsonl_files:
-                meta = get_meta(jf)
+                meta = _get_meta_cached(jf, cache)
                 if meta:
                     convos.append(meta)
 
@@ -110,7 +165,7 @@ def scan_projects(
         if not codex_base.is_dir():
             continue
         for jf in codex_base.rglob(pattern):
-            meta = get_meta(jf)
+            meta = _get_meta_cached(jf, cache)
             if meta:
                 codex_convos.append(meta)
 
@@ -135,7 +190,7 @@ def scan_projects(
     if pi_base.is_dir():
         pi_convos: list[ConversationMeta] = []
         for jf in pi_base.rglob("*.jsonl"):
-            meta = get_meta(jf)
+            meta = _get_meta_cached(jf, cache)
             if meta:
                 pi_convos.append(meta)
 
@@ -152,6 +207,8 @@ def scan_projects(
                 display_path=f"[pi] {cwd}",
                 conversations=convos,
             ))
+
+    _save_cache(cache)
 
     # Apply source filter
     if source:
