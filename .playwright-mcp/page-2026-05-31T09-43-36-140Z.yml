@@ -1,7 +1,0 @@
-- generic [active] [ref=e1]:
-  - generic [ref=e2]:
-    - heading "This page contains the following errors:" [level=3] [ref=e3]
-    - generic [ref=e4]: "error on line 30 at column 19: Double hyphen within comment: <!-- Command 1:"
-    - heading "Below is a rendering of the page up to the first error." [level=3] [ref=e5]
-  - img [ref=e6]:
-    - generic [ref=e13]: agentconvos

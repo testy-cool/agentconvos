@@ -17,3 +17,4 @@ analyses/
 .env
 .remember/
 .DS_Store
+.playwright-mcp/
