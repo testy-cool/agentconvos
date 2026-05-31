@@ -1,217 +1,120 @@
 # convolog
 
-Discover, query, and browse AI coding agent conversations. A composable primitive for working with conversation history from Claude Code, Codex, and Pi.
+Discover, query, and browse AI coding agent conversations. Works with Claude Code, Codex, and Pi.
 
-Use it as a **CLI** (`convolog --last --json`), a **Python library** (`from convolog import scan_projects`), or an **interactive TUI**. Auto-discovers sessions from `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.pi/agent/sessions/`.
-
-## Screenshot
-
-```
- convolog
- ┌─ PROJECTS (618) ───────────────┐┌─ PREVIEW (25 turns) ──────────────────────┐
- │ Filter convos... (Enter=search) ││                                            │
- │                                  ││ ## ticklish-twirling-hejlsberg             │
- │ ▼ Claude Code  (580)            ││ Date: 2026-04-06 21:11                     │
- │   ▼ ~/Work                      ││ CWD: ~/Work/my-project                     │
- │     ● my-project    (12) ★     ││ ──────────────────────────────────────────  │
- │     ► web-app       (36)        ││ ## User                                    │
- │     ► api-server   (116) ★     ││ would like to make this more profesh...    │
- │     ► cli-tool       (6)        ││                                            │
- │   ► ~                           ││ ## Assistant                               │
- │ ► Codex  (23)                   ││ Let me explore the codebase first...       │
- │ ► Pi  (15)                      ││                                            │
- │                                  ││                                            │
- ├──────────────────────────────────┤│                                            │
- │ 12 projects · 618 conversations ││                                            │
- └──────────────────────────────────┘└────────────────────────────────────────────┘
-```
-
-## Features
-
-- **`--last` / `--context`** — quickly see what happened in a project, with session summaries
-- **`--json`** — machine-readable output for piping to other tools and agents
-- **`--source` / `--after` / `--before`** — filter by agent and date range
-- **Library API** — `from convolog import scan_projects, search, parse_jsonl`
-- **Agent-grouped tree** — TUI with colored top-level nodes per agent
-- **Search/filter** — type to filter instantly, press Enter for deep full-text search
-- **Resume & handoff** — press `R` to resume or `H` to hand off context to a new session
-- **Preview** — select any conversation to see the full user/assistant exchange
-- **Multi-select** — select individual conversations, entire projects, or everything
-- **Token estimation** — see estimated token count for selected conversations
-- **Export** — export individual conversations or combined multi-conversation markdown
-- **Gemini analysis** (optional) — analyze conversations with Google Gemini to extract patterns, preferences, and insights
-- **Model picker** — cycle between Gemini models
-- **Editable prompts** — customize the analysis prompt before running
-- **Analyzed indicators** — projects that have been analyzed show a ★ marker
-- **Resizable sidebar** — drag the divider to resize
-- **CLI mode** — list, search, export, resume, and analyze without the TUI
+Use as a **CLI** (`convolog --context --json`), a **Python library** (`from convolog import scan_projects`), or an **interactive TUI** (`convolog`).
 
 ## Install
 
 ```bash
-# Install globally (recommended)
 uv tool install "convolog[ai] @ git+https://github.com/testy-cool/convolog.git"
-
-# Or clone and install locally
-git clone https://github.com/testy-cool/convolog.git
-cd convolog
-uv sync --extra ai
 ```
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+Without Gemini analysis: drop `[ai]`. Requires Python 3.12+.
 
-## Usage
+## CLI
 
-### TUI (interactive)
+### Project context (the fast path)
+
+```bash
+convolog --last              # most recent conversation for cwd
+convolog --last 3            # last 3
+convolog --context           # last 5 with summaries
+convolog --context --json    # structured, for piping to other tools
+```
+
+### Search
+
+```bash
+convolog --search "auth middleware"
+convolog --search "auth" --source claude --json
+```
+
+### List and filter
+
+```bash
+convolog --list
+convolog --list --source codex --after 2026-05-01 --json
+convolog --list --json | jq '.projects[].conversations[].summary'
+```
+
+### Resume and handoff
+
+```bash
+convolog --resume <id>              # resume in native CLI
+convolog --handoff                  # export context, start new session
+convolog --handoff select           # pick from list
+convolog --handoff codex            # latest Codex conversation
+```
+
+### Export
+
+```bash
+convolog --concat <id>              # markdown export
+convolog --concat <id> --detail tools    # include tool call summaries
+convolog --concat <id> --detail full     # include everything
+```
+
+### Analyze with Gemini
+
+Requires `GEMINI_API_KEY` env var or `.env` file. Get a key at [aistudio.google.com](https://aistudio.google.com/apikey).
+
+```bash
+convolog --analyze <id>
+convolog --analyze <id1> <id2> --model gemini-3.1-pro-preview
+convolog --analyze <id> --prompt "What tools were used most?"
+```
+
+### JSON output
+
+`--json` works with `--list`, `--search`, `--last`, and `--context`. Output includes session summaries, token estimates, file paths, and UUIDs.
+
+## Library API
+
+```python
+from convolog import scan_projects, parse_jsonl, search, get_meta, get_stats
+
+# Discover and filter
+projects = scan_projects(source="claude", after="2026-05-01")
+
+# Parse into normalized turns
+turns = parse_jsonl(projects[0].conversations[0].path)
+
+# Search across all sessions
+hits = search([c.path for p in projects for c in p.conversations], "auth")
+
+# Token and cost stats
+stats = get_stats(projects[0].conversations[0].path)
+```
+
+## TUI
 
 ```bash
 convolog
 ```
 
-**Keyboard shortcuts:**
+Interactive tree grouped by agent (Claude Code, Codex, Pi) with search, multi-select, preview, export, and Gemini analysis.
 
 | Key | Action |
 |-----|--------|
-| `/` | Focus search/filter |
-| `Enter` | Deep search (in filter) / Preview conversation (in tree) |
-| `Esc` | Clear filter / Cancel analysis |
-| `S` | Toggle select on current item |
-| `Ctrl+A` | Select all |
-| `Ctrl+D` | Deselect all |
-| `R` | Resume conversation (Claude Code, Codex) |
-| `H` | Handoff context to a new session |
-| `E` | Export selected as individual markdown files |
-| `C` | Export selected as one combined markdown file |
+| `/` | Search/filter |
+| `S` | Toggle select |
+| `R` | Resume session |
+| `H` | Handoff to new session |
+| `E` | Export markdown |
 | `A` | Analyze with Gemini |
-| `M` | Cycle Gemini model |
-| `P` | Edit analysis prompt |
-| `O` | Open exports/analyses folder |
-| `Tab` | Switch focus between sidebar and preview |
+| `Tab` | Switch panels |
 | `Q` | Quit |
-
-### CLI (headless)
-
-```bash
-# What happened last time in this project?
-convolog --last              # most recent conversation for cwd
-convolog --last 3            # last 3 conversations
-
-# Project context digest (last 5 sessions with summaries)
-convolog --context           # quick "story so far" for cwd
-convolog --context --json    # structured output for agent consumption
-
-# List all projects and conversations
-convolog --list
-
-# Search across all conversations
-convolog --search "auth middleware"
-
-# Resume a conversation by slug or UUID
-convolog --resume reflective-herding-biscuit
-convolog --resume 019e4488
-
-# Handoff to a new session (exports context, launches new CLI)
-convolog --handoff              # latest conversation in cwd
-convolog --handoff select       # pick from list
-convolog --handoff codex        # latest Codex conversation in cwd
-
-# Export by file path, UUID prefix, or slug
-convolog --concat path/to/session.jsonl
-convolog --concat 315ce500
-convolog --concat reflective-herding-biscuit
-
-# Analyze with Gemini
-export GEMINI_API_KEY=your-key-here
-convolog --analyze 315ce5 reflective-herding --model gemini-3.1-pro-preview
-
-# Custom analysis prompt (inline or from file)
-convolog --analyze 315ce5 --prompt "List all tools used.\n\n{content}"
-convolog --analyze 315ce5 --prompt my-prompt.txt
-
-# Detail levels: text (default), tools, results, full
-convolog --concat 315ce5 --detail tools     # +tool call summaries
-convolog --concat 315ce5 --detail results   # +truncated tool output
-convolog --concat 315ce5 --detail full      # +everything untruncated
-
-# Filter by agent and date range
-convolog --list --source codex --after 2026-05-01
-convolog --search "auth" --source claude --before 2026-05-15
-
-# JSON output for piping to other tools
-convolog --list --json
-convolog --list --source codex --json | jq '.projects[].conversations[].uuid'
-convolog --search "middleware" --json | jq '.hits[].snippet'
-```
-
-#### Detail levels
-
-| Level | What's included | Typical overhead |
-|-------|----------------|-----------------|
-| `text` | User/assistant text only | baseline |
-| `tools` | + tool call summaries (Bash commands, file edits, greps) | +20-30% |
-| `results` | + truncated tool output (500 chars each) | +80-100% |
-| `full` | + full untruncated tool output | +300-2000% |
-
-Exports include a stats header: model, token count, duration, tool calls, and estimated cost.
-
-## Gemini Analysis
-
-Set your API key:
-
-```bash
-# Environment variable
-export GEMINI_API_KEY=your-key-here
-
-# Or .env file in project directory
-echo GEMINI_API_KEY=your-key-here > .env
-```
-
-Get a free key at [aistudio.google.com](https://aistudio.google.com/apikey).
-
-Analysis extracts:
-- Key decisions and their rationale
-- User preferences and workflow patterns
-- Problems encountered and solutions
-- Recurring patterns across sessions
-- Unfinished work and TODOs
-
-Results saved to `~/.claude/convo-explorer/analyses/`.
-
-For multi-conversation analysis, select multiple items and press `A` — Gemini finds cross-session patterns and preference evolution.
-
-## Library API
-
-Use as a building block in other tools:
-
-```python
-from convolog import scan_projects, parse_jsonl, get_meta, search, get_stats
-
-# Discover all sessions across all agents
-projects = scan_projects()
-
-# Filter by agent and date
-codex_recent = scan_projects(source="codex", after="2026-05-01")
-
-# Parse a session into normalized turns
-turns = parse_jsonl(projects[0].conversations[0].path)
-
-# Search across all conversations
-hits = search([c.path for p in projects for c in p.conversations], "auth middleware")
-
-# Get token/cost stats
-stats = get_stats(projects[0].conversations[0].path)
-print(f"${stats.cost_estimate:.2f}, {stats.tool_calls} tool calls")
-```
 
 ## File locations
 
 | What | Where |
 |------|-------|
 | Claude Code logs | `~/.claude/projects/{project}/*.jsonl` |
-| Codex logs | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` |
+| Codex logs | `~/.codex/sessions/*.jsonl`, `~/.codex/conversations/*.json` |
 | Pi logs | `~/.pi/agent/sessions/**/*.jsonl` |
+| Summaries | `~/.claude/convo-explorer/summaries/` |
 | Analyses | `~/.claude/convo-explorer/analyses/` |
-| Combined exports | `~/.claude/convo-explorer/exports/` |
 
 ## License
 
