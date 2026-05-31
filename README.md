@@ -1,8 +1,8 @@
 # convolog
 
-A terminal UI for browsing, searching, resuming, and analyzing your Claude Code, Codex, and Pi conversation history.
+Discover, query, and browse AI coding agent conversations. A composable primitive for working with conversation history from Claude Code, Codex, and Pi.
 
-It auto-discovers Claude Code sessions from `~/.claude/projects/`, Codex sessions from `~/.codex/sessions/`, and Pi sessions from `~/.pi/agent/sessions/`, then gives you a searchable interface across every project you've worked on.
+Use it as a **CLI** (`convolog --last --json`), a **Python library** (`from convolog import scan_projects`), or an **interactive TUI**. Auto-discovers sessions from `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.pi/agent/sessions/`.
 
 ## Screenshot
 
@@ -28,10 +28,13 @@ It auto-discovers Claude Code sessions from `~/.claude/projects/`, Codex session
 
 ## Features
 
-- **Browse all projects** — auto-discovers Claude Code, Codex, and Pi sessions
-- **Agent-grouped tree** — top-level nodes per agent (colored), with path groups and projects underneath
+- **`--last` / `--context`** — quickly see what happened in a project, with session summaries
+- **`--json`** — machine-readable output for piping to other tools and agents
+- **`--source` / `--after` / `--before`** — filter by agent and date range
+- **Library API** — `from convolog import scan_projects, search, parse_jsonl`
+- **Agent-grouped tree** — TUI with colored top-level nodes per agent
 - **Search/filter** — type to filter instantly, press Enter for deep full-text search
-- **Resume & handoff** — press `R` to resume or `H` to hand off context to a new session (all agents)
+- **Resume & handoff** — press `R` to resume or `H` to hand off context to a new session
 - **Preview** — select any conversation to see the full user/assistant exchange
 - **Multi-select** — select individual conversations, entire projects, or everything
 - **Token estimation** — see estimated token count for selected conversations
@@ -89,6 +92,14 @@ convolog
 ### CLI (headless)
 
 ```bash
+# What happened last time in this project?
+convolog --last              # most recent conversation for cwd
+convolog --last 3            # last 3 conversations
+
+# Project context digest (last 5 sessions with summaries)
+convolog --context           # quick "story so far" for cwd
+convolog --context --json    # structured output for agent consumption
+
 # List all projects and conversations
 convolog --list
 

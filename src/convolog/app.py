@@ -1135,13 +1135,17 @@ def main() -> None:
     parser.add_argument("--summarize", action="store_true",
                         help="Generate missing session summaries via Gemini (cron-friendly)")
     parser.add_argument("--json", action="store_true",
-                        help="Output machine-readable JSON (use with --list, --search, --show)")
+                        help="Output machine-readable JSON (use with --list, --search, --last, --context)")
     parser.add_argument("--source", choices=["claude", "codex", "pi"],
                         help="Filter by agent source")
     parser.add_argument("--after", metavar="DATE",
                         help="Only conversations after this date (YYYY-MM-DD)")
     parser.add_argument("--before", metavar="DATE",
                         help="Only conversations before this date (YYYY-MM-DD)")
+    parser.add_argument("--last", nargs="?", const=1, type=int, metavar="N",
+                        help="Show last N conversations for current directory (default: 1)")
+    parser.add_argument("--context", action="store_true",
+                        help="Quick project digest: recent session summaries for cwd")
     args, remaining = parser.parse_known_args()
 
     # Parse extra project dirs
@@ -1191,6 +1195,68 @@ def main() -> None:
                     ts = hit.meta.timestamp[:10] if hit.meta.timestamp else "?"
                     print(f"  {ts}  {hit.meta.uuid}{slug_part}  turn {hit.turn_index+1:3d} ({hit.role:9s})  {hit.snippet}")
                 print(f"\n{len(hits)} matches found.")
+        return
+
+    if args.last is not None or args.context:
+        from .scanner import scan_projects
+        from .summarize import load_summaries
+        import json as _json
+
+        projects = scan_projects(**_scan_kwargs)
+        summaries = load_summaries()
+        cwd = os.path.realpath(os.getcwd())
+
+        cwd_convos = []
+        for p in projects:
+            for c in p.conversations:
+                if c.cwd and os.path.realpath(c.cwd) == cwd:
+                    cwd_convos.append(c)
+        cwd_convos.sort(key=lambda c: c.timestamp or "", reverse=True)
+
+        if not cwd_convos:
+            if args.json:
+                print(_json.dumps({"project": cwd, "conversations": []}))
+            else:
+                print(f"No conversations found for {cwd}")
+            return
+
+        n = args.last if args.last is not None else min(5, len(cwd_convos))
+        selected = cwd_convos[:n]
+
+        def _convo_record(c):
+            size = c.path.stat().st_size if c.path.exists() else 0
+            return {
+                "uuid": c.uuid,
+                "slug": c.slug,
+                "source": c.source,
+                "timestamp": c.timestamp,
+                "summary": summaries.get(c.uuid, ""),
+                "file": str(c.path),
+                "size_bytes": size,
+                "estimated_tokens": size // 4,
+            }
+
+        if args.json:
+            print(_json.dumps({
+                "project": cwd,
+                "total_for_project": len(cwd_convos),
+                "showing": len(selected),
+                "conversations": [_convo_record(c) for c in selected],
+            }, indent=2))
+        else:
+            label = "Context" if args.context else "Last"
+            print(f"\n{label} for {cwd} ({len(cwd_convos)} total):\n")
+            for c in selected:
+                ts = _fmt_ts(c.timestamp)
+                name = c.slug or c.uuid[:8]
+                summary = summaries.get(c.uuid, "")
+                src = c.source
+                size = c.path.stat().st_size if c.path.exists() else 0
+                tokens = size // 4
+                tok_str = f"{tokens // 1000}K" if tokens >= 1000 else str(tokens)
+                print(f"  {ts}  [{src}]  {name}  ~{tok_str} tok")
+                if summary:
+                    print(f"           {summary}")
         return
 
     if args.resume:
@@ -1260,7 +1326,9 @@ def main() -> None:
 
     if args.list:
         from .scanner import scan_projects
+        from .summarize import load_summaries
         projects = scan_projects(**_scan_kwargs)
+        summaries = load_summaries()
         if args.json:
             import json as _json
 
@@ -1273,6 +1341,7 @@ def main() -> None:
                     "timestamp": c.timestamp,
                     "cwd": c.cwd,
                     "preview": c.preview,
+                    "summary": summaries.get(c.uuid, ""),
                     "file": str(c.path),
                     "size_bytes": size,
                     "estimated_tokens": size // 4,
