@@ -1093,14 +1093,29 @@ def _pick_conversation(convos: list, cwd: str):
         return None
 
 
-def _handoff_cmd(source: str, message: str, extra_args: list[str] | None = None) -> list[str]:
-    """Build a handoff command for the given source CLI."""
+def _handoff_cmd(
+    source: str,
+    message: str,
+    extra_args: list[str] | None = None,
+    codex_yolo: bool = False,
+) -> list[str]:
+    """Build a handoff command for the given target CLI."""
     extra = extra_args or []
     if source == "codex":
-        return ["codex", "--dangerously-bypass-approvals-and-sandbox"] + extra + [message]
+        codex_args = ["--yolo"] if codex_yolo else ["--dangerously-bypass-approvals-and-sandbox"]
+        return ["codex"] + codex_args + extra + [message]
     if source == "pi":
         return ["pi"] + extra + [message]
     return ["claude", "--dangerously-skip-permissions"] + extra + [message]
+
+
+def _handoff_agent(conversation_source: str, requested_agent: str | None, codex_yolo: bool) -> str:
+    """Return the CLI agent to start for handoff."""
+    if requested_agent:
+        return requested_agent
+    if codex_yolo:
+        return "codex"
+    return conversation_source
 
 
 def _resume_cmd(source: str, uuid: str, extra_args: list[str] | None = None) -> list[str] | None:
@@ -1130,6 +1145,10 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print the command instead of running it (use with --resume/--handoff)")
     parser.add_argument("--handoff", nargs="?", const="latest", default=None, metavar="MODE",
                         help="Export CWD conversation and start new session. Modes: latest (default), select (pick from list), claude/codex/pi (latest from that source)")
+    parser.add_argument("--handoff-agent", choices=["claude", "codex", "pi"], metavar="AGENT",
+                        help="Agent CLI to start for --handoff (defaults to selected conversation source)")
+    parser.add_argument("--yolo", action="store_true",
+                        help="Use `codex --yolo` for Codex handoff commands (implies --handoff-agent codex if omitted)")
     parser.add_argument("--export-all", metavar="DIR", help="Export every conversation as individual markdown files to DIR")
     parser.add_argument("--projects-dir", nargs="+", metavar="DIR", help="Additional projects directories to scan (e.g. copied from other machines)")
     parser.add_argument("--summarize", action="store_true",
@@ -1320,7 +1339,11 @@ def main() -> None:
         name = meta.slug or meta.uuid[:8]
         print(f"Exported: {name} → {out_path}")
         message = f"Read the file {out_path.resolve()} for context from our last session, then summarize what we were working on and ask how to continue."
-        cmd = _handoff_cmd(meta.source, message, remaining)
+        target_agent = _handoff_agent(meta.source, args.handoff_agent, args.yolo)
+        if args.yolo and target_agent != "codex":
+            print("Error: --yolo only applies to Codex handoff commands")
+            return
+        cmd = _handoff_cmd(target_agent, message, remaining, codex_yolo=args.yolo)
         display = " ".join(cmd[:-1]) + f' "{message}"'
         print(f"  {display}")
         if args.dry_run:
@@ -1564,7 +1587,11 @@ def main() -> None:
         name = meta.slug or meta.uuid[:8]
         print(f"Exported: {name} → {out_path}")
         message = f"Read the file {out_path.resolve()} for context from our last session, then summarize what we were working on and ask how to continue."
-        cmd = _handoff_cmd(meta.source, message, remaining)
+        target_agent = _handoff_agent(meta.source, args.handoff_agent, args.yolo)
+        if args.yolo and target_agent != "codex":
+            print("Error: --yolo only applies to Codex handoff commands")
+            return
+        cmd = _handoff_cmd(target_agent, message, remaining, codex_yolo=args.yolo)
         display = " ".join(cmd[:-1]) + f' "{message}"'
         print(f"  {display}")
         if meta.cwd and os.path.isdir(meta.cwd):

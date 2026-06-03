@@ -47,6 +47,8 @@ agentconvos --resume <id>              # resume in native CLI
 agentconvos --handoff                  # export context, start new session
 agentconvos --handoff select           # pick from list
 agentconvos --handoff codex            # latest Codex conversation
+agentconvos --handoff --handoff-agent codex   # hand off latest conversation into Codex
+agentconvos --handoff --yolo           # hand off into Codex with codex --yolo
 ```
 
 ### Export
