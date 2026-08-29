@@ -14,7 +14,7 @@ from enum import StrEnum
 from .parser import DETAIL_TEXT, ConversationMeta, get_stats, parse_jsonl
 
 PARSER_VERSION = "normalized-detail-text-v1"
-ANALYSIS_VERSION = "reply-language-v1"
+ANALYSIS_VERSION = "reply-language-v2"
 SPLIT_SEED = "agentconvos-reply-language-v1"
 
 _FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
@@ -66,11 +66,13 @@ class ReplyObservation:
     turn_index: int
     text: str
     preceding_user: str | None
+    source: str | None = None
 
     def public_dict(self) -> dict:
         return {
             "session_id": self.session_id,
             "project": self.project,
+            "source": self.source,
             "date": self.date,
             "model": self.model,
             "turn_index": self.turn_index,
@@ -99,6 +101,7 @@ def _reply_sort_key(reply: ReplyObservation) -> tuple:
     return (
         reply.project,
         reply.session_id,
+        reply.source or "",
         reply.turn_index,
         reply.text,
         reply.preceding_user or "",
@@ -163,6 +166,7 @@ def build_reply_corpus(conversations: Iterable[ConversationMeta]) -> ReplyCorpus
                     ReplyObservation(
                         session_id=conversation.uuid,
                         project=conversation.cwd or str(conversation.path.parent),
+                        source=conversation.source or None,
                         date=(conversation.timestamp or "")[:10] or None,
                         model=model,
                         turn_index=turn_index,

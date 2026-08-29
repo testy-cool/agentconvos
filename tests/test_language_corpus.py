@@ -32,6 +32,7 @@ def _observation(
     text: str,
     user: str = "A different request.",
     turn_index: int = 1,
+    source: str | None = None,
 ):
     language = _language()
     return language.ReplyObservation(
@@ -42,6 +43,7 @@ def _observation(
         turn_index=turn_index,
         text=text,
         preceding_user=user,
+        source=source,
     )
 
 
@@ -98,10 +100,12 @@ def test_corpus_pairs_each_assistant_reply_with_normalized_preceding_user(tmp_pa
     assert [reply.turn_index for reply in corpus.replies] == [1, 3]
     assert corpus.replies[0].date == "2026-08-20"
     assert corpus.replies[0].model == "claude-fixture"
+    assert corpus.replies[0].source == "claude"
     serialized = corpus.replies[0].public_dict()
     assert list(serialized) == [
         "session_id",
         "project",
+        "source",
         "date",
         "model",
         "turn_index",
@@ -112,6 +116,22 @@ def test_corpus_pairs_each_assistant_reply_with_normalized_preceding_user(tmp_pa
     assert "reasoning-only" not in json.dumps(corpus.public_dict())
     assert "result-only" not in json.dumps(corpus.public_dict())
     assert "/private/path.py" not in json.dumps(corpus.public_dict())
+
+
+def test_source_identity_is_serialized_and_changes_the_manifest():
+    language = _language()
+    claude = _observation(
+        "session-1", "project-1", "The same normalized reply.", source="claude"
+    )
+    codex = _observation(
+        "session-1", "project-1", "The same normalized reply.", source="codex"
+    )
+
+    claude_corpus = language.ReplyCorpus.from_replies((claude,))
+    codex_corpus = language.ReplyCorpus.from_replies((codex,))
+
+    assert claude_corpus.replies[0].public_dict()["source"] == "claude"
+    assert claude_corpus.manifest.sha256 != codex_corpus.manifest.sha256
 
 
 def test_manifest_and_project_split_are_repeatable_and_have_no_leakage():
