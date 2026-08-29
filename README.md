@@ -133,9 +133,11 @@ agentconvos --ngrams --source claude --limit 20 --json
 agentconvos --habits --source claude --output ./claude-habits.html
 ```
 
-`--ngrams` compares assistant replies with other indexed sources. `--habits`
-builds local HTML and JSON candidate evidence without a comparator. These are
-descriptive corpus statistics, not proof of training, intent, or inherent style.
+Both commands analyze assistant reply text only. `--ngrams` compares it with
+all other indexed agent sources. `--habits` builds local HTML and JSON candidate
+evidence without a comparator and displays candidate writing patterns with up
+to three examples. This evidence does not prove intent and is not proof of
+training or an agent's underlying style.
 
 For the optional reproducible NLP report, install spaCy, TextDescriptives, and
 the trained model into one environment. In a source checkout:
