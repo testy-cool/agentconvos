@@ -35,7 +35,7 @@ class LanguageNLPError(RuntimeError):
 def _unavailable_message(model_name: str) -> str:
     return (
         f"Language analysis for model '{model_name}' is unavailable. "
-        "Install agentconvos[language] and install that trained spaCy model explicitly; "
+        f"Install agentconvos[language], then run 'python -m spacy download {model_name}'; "
         "this adapter does not download models at runtime."
     )
 
@@ -278,6 +278,17 @@ class NLPAdapter:
         finally:
             if cache:
                 cache.close()
+
+    def lemmatize_phrases(self, phrases: Iterable[str]) -> dict[str, str]:
+        """Lemmatize a bounded phrase batch locally in one process."""
+        ordered = tuple(sorted(set(phrases)))
+        docs = self._nlp.pipe(ordered, n_process=1)
+        return {
+            phrase: " ".join(
+                token.lemma_.casefold() for token in doc if not token.is_space
+            )
+            for phrase, doc in zip(ordered, docs, strict=True)
+        }
 
 
 def _percentile(values: list[float], quantile: float) -> float:

@@ -2253,6 +2253,28 @@ def main() -> None:
         help="Build a local HTML report of recurring reply phrases and writing patterns",
     )
     parser.add_argument(
+        "--nlp",
+        action="store_true",
+        help="Enrich --habits with local spaCy and TextDescriptives analysis",
+    )
+    parser.add_argument(
+        "--baseline",
+        choices=["matched", "none"],
+        default="none",
+        help="Matched other-source comparison for --habits --nlp (default: none)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Deterministic split seed for --habits --nlp (default: 42)",
+    )
+    parser.add_argument(
+        "--spacy-model",
+        default="en_core_web_sm",
+        help="Explicitly installed trained model for --habits --nlp (default: en_core_web_sm)",
+    )
+    parser.add_argument(
         "--output",
         metavar="PATH",
         help="Output HTML path for --habits (JSON is written beside it)",
@@ -2311,6 +2333,18 @@ def main() -> None:
                         help="Quick project digest: last 5 sessions per agent with catch-up details")
     args, remaining = parser.parse_known_args()
 
+    def _option_was_supplied(option: str) -> bool:
+        return any(
+            argument == option or argument.startswith(f"{option}=")
+            for argument in sys.argv[1:]
+        )
+
+    if args.nlp and not args.habits:
+        parser.error("--nlp requires --habits")
+    for option in ("--baseline", "--seed", "--spacy-model"):
+        if _option_was_supplied(option) and not (args.habits and args.nlp):
+            parser.error(f"{option} requires --habits --nlp")
+
     if args.ngrams and sys.argv.count("--source") != 1:
         parser.error("--ngrams requires exactly one --source")
     if args.habits and sys.argv.count("--source") != 1:
@@ -2332,6 +2366,72 @@ def main() -> None:
     if args.detail is None:
         args.detail = "results" if (args.deep or args.analyze) else "text"
 
+
+    if args.habits and args.nlp:
+        import json as _json
+
+        from .language_nlp import LanguageNLPError
+        from .language_report import run_language_report
+        from .scanner import scan_projects
+
+        projects = scan_projects(
+            extra_dirs=_extra_dirs,
+            source=None if args.baseline == "matched" else args.source,
+            after=args.after,
+            before=args.before,
+        )
+        target_conversations = [
+            conversation
+            for project in projects
+            for conversation in project.conversations
+            if conversation.source == args.source
+        ]
+        baseline_conversations = [
+            conversation
+            for project in projects
+            for conversation in project.conversations
+            if args.baseline == "matched" and conversation.source != args.source
+        ]
+        output = (
+            Path(args.output)
+            if args.output
+            else Path.home()
+            / ".claude"
+            / "convo-explorer"
+            / "reports"
+            / f"{args.source}-language-patterns.html"
+        )
+        try:
+            report = run_language_report(
+                target_conversations,
+                baseline_conversations,
+                source=args.source,
+                after=args.after,
+                before=args.before,
+                seed=args.seed,
+                baseline_mode=args.baseline,
+                spacy_model=args.spacy_model,
+                output=output,
+                limit=max(1, args.limit),
+            )
+        except LanguageNLPError as error:
+            print(str(error), file=sys.stderr)
+            raise SystemExit(1) from None
+        if args.json:
+            print(
+                _json.dumps(
+                    {
+                        "html": str(output),
+                        "json": str(output.with_suffix(".json")),
+                        "report": report.public_dict(),
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print(f"Wrote enriched language-pattern report: {output}")
+            print(f"Wrote report data: {output.with_suffix('.json')}")
+        return
 
     if args.habits:
         import json as _json

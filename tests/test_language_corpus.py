@@ -118,6 +118,23 @@ def test_corpus_pairs_each_assistant_reply_with_normalized_preceding_user(tmp_pa
     assert "/private/path.py" not in json.dumps(corpus.public_dict())
 
 
+def test_recurring_analysis_uses_the_requested_public_split_seed():
+    language = _language()
+    corpus = language.ReplyCorpus.from_replies(
+        _observation(f"session-{index}", f"project-{index}", "A recurring phrase remains.")
+        for index in range(10)
+    )
+
+    analysis = language.analyze_recurring_candidates(
+        corpus,
+        split_seed="7",
+        _minimum_sessions=1,
+        _minimum_projects=1,
+    )
+
+    assert analysis.split_seed == "7"
+
+
 def test_source_identity_is_serialized_and_changes_the_manifest():
     language = _language()
     claude = _observation(

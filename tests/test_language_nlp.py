@@ -32,6 +32,13 @@ def _reply(session: str, project: str, text: str) -> ReplyObservation:
 class _FakeDoc:
     def __init__(self, text: str):
         self.text = text
+        self.tokens = [
+            type("Token", (), {"lemma_": token.rstrip("s"), "is_space": False})()
+            for token in text.split()
+        ]
+
+    def __iter__(self):
+        return iter(self.tokens)
 
 
 class _FakeNLP:
@@ -162,6 +169,15 @@ def test_adapter_registers_only_selected_components_and_pipes_once():
     assert batch.cache_misses == 2
     assert batch.records[0].descriptors["entropy"] is None
     assert "quality_label" not in batch.records[0].descriptors
+
+
+def test_adapter_lemmatizes_phrases_with_single_process_batching():
+    adapter, fake_nlp, _ = _adapter()
+
+    lemmas = adapter.lemmatize_phrases(("checks remain", "tests pass"))
+
+    assert lemmas == {"checks remain": "check remain", "tests pass": "test pa"}
+    assert fake_nlp.pipe_calls == [(["checks remain", "tests pass"], 1)]
 
 
 def test_adapter_accepts_textdescriptives_single_row_extract_dict_shape():

@@ -582,10 +582,11 @@ class CandidateAnalysis:
 def analyze_recurring_candidates(
     corpus: ReplyCorpus,
     *,
+    split_seed: str = SPLIT_SEED,
     _minimum_sessions: int | None = None,
     _minimum_projects: int | None = None,
 ) -> CandidateAnalysis:
-    split = split_corpus(corpus)
+    split = split_corpus(corpus, seed=split_seed)
     discovery_sessions = len({reply.session_id for reply in split.discovery.replies})
     discovery_projects = len({reply.project for reply in split.discovery.replies})
     defaults = EligibilityThresholds.for_totals(discovery_sessions, discovery_projects)
