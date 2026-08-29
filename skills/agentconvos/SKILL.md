@@ -89,6 +89,19 @@ reproducible writing structures, and three short examples per row. It does not
 call a model or upload conversation text. Treat its labels as candidate textual
 evidence, not proof of intent, training data, or an agent's inherent personality.
 
+For deterministic source-only recurring NLP evidence, explicitly install
+`agentconvos[language]` plus `en_core_web_sm`, then run:
+
+```bash
+agentconvos --habits --nlp --source claude
+```
+
+The command never downloads a model at runtime and never calls a model API. Add
+`--baseline matched` only when an opt-in, project/month/length-matched other-source
+comparison is wanted. Recurring and distinctive are separate claims; without
+positive held-out matched evidence and a bootstrap interval excluding zero, report
+the phrase as a descriptive candidate. Plain `--habits` retains its original report.
+
 ## Asking a question the archive has to answer
 
 ```bash

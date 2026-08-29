@@ -136,6 +136,64 @@ training data, or an agent's inherent personality. Synthetic phrases such as
 demonstrate the report shape without publishing a real conversation. Generated
 HTML and JSON are local artifacts and are not included in this repository.
 
+#### Optional reproducible NLP evidence
+
+Install the optional language dependencies and the trained English pipeline explicitly:
+
+```bash
+pip install 'agentconvos[language]'
+python -m spacy download en_core_web_sm
+```
+
+For a source-only recurring analysis, add `--nlp`:
+
+```bash
+agentconvos --habits --nlp --source claude --after 2026-08-01 --before 2026-08-31
+```
+
+This is opt-in. Plain `--habits` keeps the original report behavior. The NLP path
+never downloads a model at runtime, never calls a model API, and processes the
+local trained pipeline in one process. A missing extra or model exits without
+writing either report artifact.
+
+The JSON and HTML record the normalized-corpus manifest, parser and analysis
+versions, installed package and spaCy model versions, pipeline fingerprint, and
+the integer split seed (default `42`). Whole projects are deterministically split
+70% into discovery and 30% into validation. Discovery candidates must meet the
+documented session/project eligibility thresholds; held-out recurrence can support
+a cautious recurring claim. The default remains source-only recurring evidence and
+does not read other agent sources.
+
+An other-source comparison is separately opt-in:
+
+```bash
+agentconvos --habits --nlp --source claude --baseline matched --seed 42
+```
+
+Matched replies share the exact project, calendar month, and cleaned word-count
+bin. Distinctive status additionally requires a positive held-out direction and a
+project-bootstrap 95% interval that excludes zero. Without that gate, the report
+uses a descriptive candidate label rather than implying an inherent agent style.
+
+Numeric TextDescriptives fields are summarized by taking each project median first,
+then the corpus median and IQR, so large projects do not receive extra weight.
+Coherence is not enabled and quality labels are not interpreted as style. Reports
+show at most three scrubbed assistant-only examples from distinct pseudonymous
+projects per displayed pattern; user prompts, tool payloads, hidden reasoning, and
+raw local paths are excluded.
+
+Reply descriptors are cached in
+`$XDG_CACHE_HOME/agentconvos/language-descriptors.sqlite3` (or
+`~/.cache/agentconvos/language-descriptors.sqlite3`). Set
+`AGENTCONVOS_LANGUAGE_CACHE` to override that internal cache path. Cache keys include
+the normalized reply hash and full pipeline fingerprint, so package, model,
+component, Python, or analysis-version changes invalidate prior entries.
+
+These outputs remain corpus-dependent descriptive evidence. Lemmas and descriptors
+depend on the selected trained model; normalization can discard technical language;
+matching cannot remove every topic or time confound; bootstrap intervals are not a
+causal test; and sparse archives may yield no eligible patterns.
+
 ### Fast interactive find
 
 ```bash

@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -185,3 +186,19 @@ def test_nlp_cli_forwards_date_filters_and_preserves_legacy_path(tmp_path):
 
     legacy.assert_called_once()
     nlp_report.assert_not_called()
+
+
+def test_docs_explain_local_language_install_methodology_and_limits():
+    root = Path(__file__).parents[1]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    skill = (root / "skills" / "agentconvos" / "SKILL.md").read_text(encoding="utf-8")
+    combined = readme + skill
+
+    assert "agentconvos[language]" in readme
+    assert "python -m spacy download en_core_web_sm" in readme
+    assert "never downloads a model at runtime" in combined
+    assert "--baseline matched" in combined
+    assert "source-only recurring" in combined
+    assert "AGENTCONVOS_LANGUAGE_CACHE" in readme
+    assert "70%" in readme and "30%" in readme
+    assert "descriptive candidate" in combined
