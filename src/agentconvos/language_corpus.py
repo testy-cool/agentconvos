@@ -354,8 +354,16 @@ class CandidateSummary:
     validation_replies: int = 0
     validation_sessions: int = 0
     validation_projects: int = 0
+    project_dispersion: tuple[tuple[str, int], ...] = ()
+    time_dispersion: tuple[tuple[str, int], ...] = ()
+    model_dispersion: tuple[tuple[str, int], ...] = ()
     distinctiveness: float | None = None
+    matched_target_reply_prevalence: float | None = None
     baseline_reply_prevalence: float | None = None
+    distinctiveness_ci_low: float | None = None
+    distinctiveness_ci_high: float | None = None
+    heldout_distinctiveness: float | None = None
+    heldout_direction: str | None = None
 
     def public_dict(self) -> dict:
         result = {
@@ -376,11 +384,33 @@ class CandidateSummary:
             "validation_replies": self.validation_replies,
             "validation_sessions": self.validation_sessions,
             "validation_projects": self.validation_projects,
+            "project_dispersion": [
+                {"value": value, "replies": replies}
+                for value, replies in self.project_dispersion
+            ],
+            "time_dispersion": [
+                {"value": value, "replies": replies}
+                for value, replies in self.time_dispersion
+            ],
+            "model_dispersion": [
+                {"value": value, "replies": replies}
+                for value, replies in self.model_dispersion
+            ],
         }
         if self.distinctiveness is not None:
             result["distinctiveness"] = self.distinctiveness
+        if self.matched_target_reply_prevalence is not None:
+            result["matched_target_reply_prevalence"] = self.matched_target_reply_prevalence
         if self.baseline_reply_prevalence is not None:
             result["baseline_reply_prevalence"] = self.baseline_reply_prevalence
+        if self.distinctiveness_ci_low is not None:
+            result["distinctiveness_ci_low"] = self.distinctiveness_ci_low
+        if self.distinctiveness_ci_high is not None:
+            result["distinctiveness_ci_high"] = self.distinctiveness_ci_high
+        if self.heldout_distinctiveness is not None:
+            result["heldout_distinctiveness"] = self.heldout_distinctiveness
+        if self.heldout_direction is not None:
+            result["heldout_direction"] = self.heldout_direction
         return result
 
 
@@ -396,6 +426,8 @@ class _CandidateCounts:
     sessions: set[str] = field(default_factory=set)
     projects: set[str] = field(default_factory=set)
     project_replies: Counter[str] = field(default_factory=Counter)
+    time_replies: Counter[str] = field(default_factory=Counter)
+    model_replies: Counter[str] = field(default_factory=Counter)
     echo_replies: int = 0
 
 
@@ -418,6 +450,9 @@ def _candidate_summaries(
             candidate.sessions.add(reply.session_id)
             candidate.projects.add(reply.project)
             candidate.project_replies[reply.project] += 1
+            month = reply.date[:7] if reply.date and len(reply.date) >= 7 else "[unknown]"
+            candidate.time_replies[month] += 1
+            candidate.model_replies[reply.model or "[unknown]"] += 1
             if _contains_phrase(reply.preceding_user, feature.phrase):
                 candidate.echo_replies += 1
 
@@ -453,6 +488,9 @@ def _candidate_summaries(
             echo_replies=candidate.echo_replies,
             echo_rate=echo_rate,
             ranking_score=ranking_score,
+            project_dispersion=tuple(sorted(candidate.project_replies.items())),
+            time_dispersion=tuple(sorted(candidate.time_replies.items())),
+            model_dispersion=tuple(sorted(candidate.model_replies.items())),
         )
     return summaries
 
@@ -585,3 +623,8 @@ def analyze_recurring_candidates(
         eligibility=eligibility,
         candidates=tuple(sorted(with_validation, key=_candidate_sort_key)),
     )
+
+
+def cleaned_word_count(text: str) -> int:
+    """Count normalized prose tokens after code, URL, path, and identifier removal."""
+    return sum(len(tokens) for tokens in _sentence_tokens(text))
