@@ -106,7 +106,12 @@ def normalized_reply_hash(reply: ReplyObservation) -> str:
     return hashlib.sha256(reply.text.encode()).hexdigest()
 
 
-def _descriptor_values(payload: Mapping[str, Any], prefix: str = "") -> dict[str, float | None]:
+def _descriptor_values(
+    payload: Mapping[str, Any] | list[Mapping[str, Any]],
+    prefix: str = "",
+) -> dict[str, float | None]:
+    if isinstance(payload, list):
+        payload = payload[0]
     flattened: dict[str, float | None] = {}
     for raw_key, value in payload.items():
         key = f"{prefix}.{raw_key}" if prefix else str(raw_key)

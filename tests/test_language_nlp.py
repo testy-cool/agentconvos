@@ -164,6 +164,27 @@ def test_adapter_registers_only_selected_components_and_pipes_once():
     assert "quality_label" not in batch.records[0].descriptors
 
 
+def test_adapter_accepts_textdescriptives_single_row_extract_dict_shape():
+    class ListTextDescriptives(_FakeTextDescriptives):
+        def extract_dict(self, doc, *, metrics, include_text):
+            return [{"sentence_length_mean": 7.0}]
+
+    language_nlp = _nlp_module()
+    fake_nlp = _FakeNLP()
+    adapter = language_nlp.NLPAdapter.load(
+        _spacy=_FakeSpacy(fake_nlp),
+        _textdescriptives=ListTextDescriptives(),
+        _package_versions={"spacy": "3.8.16", "textdescriptives": "2.8.4"},
+    )
+
+    batch = adapter.describe_replies(
+        (_reply("session-1", "project-a", "A synthetic reply."),),
+        cache_path=None,
+    )
+
+    assert batch.records[0].descriptors == {"sentence_length_mean": 7.0}
+
+
 def test_sqlite_cache_hits_and_pipeline_fingerprint_invalidation(tmp_path):
     cache_path = tmp_path / "language.sqlite3"
     replies = (
