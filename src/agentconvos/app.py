@@ -2417,6 +2417,10 @@ def main() -> None:
         except LanguageNLPError as error:
             print(str(error), file=sys.stderr)
             raise SystemExit(1) from None
+        print(
+            f"Descriptor cache: {report.cache_hits} hit, {report.cache_misses} miss",
+            file=sys.stderr,
+        )
         if args.json:
             print(
                 _json.dumps(

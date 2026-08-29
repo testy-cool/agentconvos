@@ -231,3 +231,43 @@ def test_write_report_emits_stable_json_and_html(tmp_path):
     assert output.is_file()
     assert output.with_suffix(".json").read_bytes() == first_json
     assert json.loads(first_json) == report.public_dict()
+
+
+def test_cache_state_does_not_change_deterministic_report_artifacts(tmp_path):
+    from agentconvos.language_report import build_language_report
+
+    class StatefulAdapter(_FakeAdapter):
+        calls = 0
+
+        def describe_replies(self, replies, *, cache_path: Path | None):
+            batch = super().describe_replies(replies, cache_path=cache_path)
+            self.calls += 1
+            if self.calls == 1:
+                return batch
+            return DescriptorBatch(
+                fingerprint=batch.fingerprint,
+                records=batch.records,
+                cache_hits=len(batch.records),
+                cache_misses=0,
+            )
+
+    adapter = StatefulAdapter()
+    corpus = ReplyCorpus.from_replies(_reply(index) for index in range(20))
+    kwargs = {
+        "adapter": adapter,
+        "source": "claude",
+        "after": None,
+        "before": None,
+        "seed": 42,
+        "baseline_mode": "none",
+        "cache_path": tmp_path / "cache.sqlite3",
+        "limit": 5,
+    }
+
+    first = build_language_report(corpus, ReplyCorpus.from_replies(()), **kwargs)
+    second = build_language_report(corpus, ReplyCorpus.from_replies(()), **kwargs)
+
+    assert first.cache_misses == 20 and first.cache_hits == 0
+    assert second.cache_hits == 20 and second.cache_misses == 0
+    assert first.public_dict() == second.public_dict()
+    assert "cache_hits" not in first.public_dict()["descriptors"]

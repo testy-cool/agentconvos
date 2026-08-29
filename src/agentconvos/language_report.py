@@ -192,6 +192,8 @@ class LanguageReport:
     matching: dict[str, Any]
     descriptors: dict[str, Any]
     patterns: tuple[dict[str, Any], ...]
+    cache_hits: int
+    cache_misses: int
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -292,11 +294,11 @@ def build_language_report(
         corpus=_counts(target),
         matching=matching,
         descriptors={
-            "cache_hits": descriptor_batch.cache_hits,
-            "cache_misses": descriptor_batch.cache_misses,
             "metrics": [_descriptor_dict(metric) for metric in descriptor_metrics],
         },
         patterns=patterns,
+        cache_hits=descriptor_batch.cache_hits,
+        cache_misses=descriptor_batch.cache_misses,
     )
 
 
@@ -368,7 +370,7 @@ def render_html(report: LanguageReport) -> str:
 <div class="meta">
 <div class="card"><strong>Canonical manifest</strong><br>analysis {html.escape(payload['analysis_version'])}<br><code>{payload['manifest']['sha256']}</code><br>{payload['corpus']['replies']} replies · {payload['corpus']['sessions']} sessions · {payload['corpus']['projects']} projects</div>
 <div class="card"><strong>Discovery / validation</strong><br>seed {payload['split']['seed']}<br>{discovery['replies']} / {validation['replies']} replies<br>{discovery['projects']} / {validation['projects']} projects</div>
-<div class="card"><strong>Pipeline</strong><br>{html.escape(payload['pipeline']['model_name'])} {html.escape(payload['pipeline']['model_version'])}<br>{html.escape(', '.join(f'{name} {version}' for name, version in payload['pipeline']['package_versions'].items()))}<br><code>{payload['pipeline']['sha256']}</code><br>cache {payload['descriptors']['cache_hits']} hit / {payload['descriptors']['cache_misses']} miss</div>
+<div class="card"><strong>Pipeline</strong><br>{html.escape(payload['pipeline']['model_name'])} {html.escape(payload['pipeline']['model_version'])}<br>{html.escape(', '.join(f'{name} {version}' for name, version in payload['pipeline']['package_versions'].items()))}<br><code>{payload['pipeline']['sha256']}</code><br>descriptors cached by reply and fingerprint</div>
 <div class="card"><strong>Filters</strong><br>source {html.escape(payload['filters']['source'])}<br>dates {html.escape(str(payload['filters']['after']))} to {html.escape(str(payload['filters']['before']))}<br>models {html.escape(', '.join(payload['filters']['models']))}</div>
 <div class="card"><strong>Matched comparison</strong><br>{matching['mode']}<br>{matching['matched']} matched · {matching['unmatched']} unmatched<br>coverage {_format_number(matching['coverage'])}</div>
 </div>
