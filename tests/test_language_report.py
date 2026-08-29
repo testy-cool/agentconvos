@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -176,10 +177,14 @@ def test_matching_uses_the_target_project_partition_even_with_extra_baseline_pro
 
     targets = [_reply(index) for index in range(20)]
     baselines = [_reply(index, source="codex", phrase=False) for index in range(20)]
+    extra_projects = sorted(
+        (f"/unmatched/extra-{index}" for index in range(3000)),
+        key=lambda project: hashlib.sha256(f"42\0{project}".encode()).hexdigest(),
+    )[:100]
     baselines.extend(
         ReplyObservation(
             session_id=f"extra-{index}",
-            project=f"/unmatched/extra-{index}",
+            project=project,
             source="codex",
             date="2026-07-15",
             model="baseline-model",
@@ -187,7 +192,7 @@ def test_matching_uses_the_target_project_partition_even_with_extra_baseline_pro
             text="An unrelated baseline reply.",
             preceding_user=None,
         )
-        for index in range(100)
+        for index, project in enumerate(extra_projects)
     )
 
     report = build_language_report(

@@ -237,12 +237,19 @@ def build_language_report(
         "coverage": 0.0,
     }
     if baseline_mode == "matched":
-        baseline_split = split_corpus(baseline, seed=seed_text)
+        discovery_projects = {reply.project for reply in split.discovery.replies}
+        validation_projects = {reply.project for reply in split.validation.replies}
+        baseline_discovery = tuple(
+            reply for reply in baseline.replies if reply.project in discovery_projects
+        )
+        baseline_validation = tuple(
+            reply for reply in baseline.replies if reply.project in validation_projects
+        )
         discovery_matches = select_matched_baseline(
-            split.discovery.replies, baseline_split.discovery.replies
+            split.discovery.replies, baseline_discovery
         )
         validation_matches = select_matched_baseline(
-            split.validation.replies, baseline_split.validation.replies
+            split.validation.replies, baseline_validation
         )
         candidates = analyze_matched_candidates(
             candidates,
