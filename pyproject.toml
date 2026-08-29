@@ -38,6 +38,10 @@ Issues = "https://github.com/testy-cool/agentconvos/issues"
 
 [project.optional-dependencies]
 ai = ["google-genai>=1.0"]
+language = [
+    "spacy>=3.8,<3.9",
+    "textdescriptives>=2,<3",
+]
 
 [project.scripts]
 agentconvos = "agentconvos.app:main"
