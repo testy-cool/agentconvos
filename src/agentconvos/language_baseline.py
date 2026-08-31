@@ -148,8 +148,36 @@ def select_matched_baseline(
     )
 
 
-def _has_phrase(reply: ReplyObservation, phrase: str) -> bool:
-    return any(feature.phrase == phrase for feature in extract_reply_features(reply.text))
+@dataclass(frozen=True)
+class _PairPhrases:
+    """One matched pair reduced to the candidate phrases each side contains.
+
+    Feature extraction runs once per reply here; the bootstrap below resamples
+    pairs a thousand times per candidate, so extracting inside the resample
+    loop is unusable on real archives.
+    """
+
+    project: str
+    target_phrases: frozenset[str]
+    baseline_phrases: frozenset[str]
+
+
+def _pair_phrases(
+    pairs: Iterable[MatchedPair], phrases: Iterable[str]
+) -> tuple[_PairPhrases, ...]:
+    wanted = frozenset(phrases)
+    return tuple(
+        _PairPhrases(
+            project=pair.target.project,
+            target_phrases=wanted.intersection(
+                feature.phrase for feature in extract_reply_features(pair.target.text)
+            ),
+            baseline_phrases=wanted.intersection(
+                feature.phrase for feature in extract_reply_features(pair.baseline.text)
+            ),
+        )
+        for pair in pairs
+    )
 
 
 def _smoothed_log_odds(
@@ -163,10 +191,10 @@ def _smoothed_log_odds(
     return math.log(target_odds) - math.log(baseline_odds)
 
 
-def _effect(pairs: Iterable[MatchedPair], phrase: str) -> tuple[int, int, int, float]:
+def _effect(pairs: Iterable[_PairPhrases], phrase: str) -> tuple[int, int, int, float]:
     materialized = tuple(pairs)
-    target_hits = sum(_has_phrase(pair.target, phrase) for pair in materialized)
-    baseline_hits = sum(_has_phrase(pair.baseline, phrase) for pair in materialized)
+    target_hits = sum(phrase in pair.target_phrases for pair in materialized)
+    baseline_hits = sum(phrase in pair.baseline_phrases for pair in materialized)
     total = len(materialized)
     return (
         target_hits,
@@ -189,14 +217,14 @@ def _percentile(values: list[float], quantile: float) -> float:
 
 
 def _bootstrap_interval(
-    pairs: tuple[MatchedPair, ...],
+    pairs: tuple[_PairPhrases, ...],
     phrase: str,
     *,
     samples: int,
 ) -> tuple[float, float]:
-    by_project: dict[str, list[MatchedPair]] = defaultdict(list)
+    by_project: dict[str, list[_PairPhrases]] = defaultdict(list)
     for pair in pairs:
-        by_project[pair.target.project].append(pair)
+        by_project[pair.project].append(pair)
     projects = sorted(by_project)
     if not projects or samples <= 0:
         return 0.0, 0.0
@@ -228,16 +256,20 @@ def analyze_matched_candidates(
     _bootstrap_samples: int = 1000,
 ) -> tuple[CandidateSummary, ...]:
     analyzed = []
-    for candidate in candidates:
+    materialized = tuple(candidates)
+    phrases = tuple(candidate.phrase for candidate in materialized)
+    discovery_pairs = _pair_phrases(discovery_matches.pairs, phrases)
+    validation_pairs = _pair_phrases(validation_matches.pairs, phrases)
+    for candidate in materialized:
         target_hits, baseline_hits, total, effect = _effect(
-            discovery_matches.pairs, candidate.phrase
+            discovery_pairs, candidate.phrase
         )
         interval_low, interval_high = _bootstrap_interval(
-            discovery_matches.pairs,
+            discovery_pairs,
             candidate.phrase,
             samples=_bootstrap_samples,
         )
-        heldout_effect = _effect(validation_matches.pairs, candidate.phrase)[3]
+        heldout_effect = _effect(validation_pairs, candidate.phrase)[3]
         heldout_direction = _direction(heldout_effect)
         claim_types = tuple(
             claim
