@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import re
@@ -274,46 +275,50 @@ def extract_reply_features(text: str) -> tuple[ExtractedFeature, ...]:
     """Extract content, function/rhetorical, opener, and ender phrase candidates."""
     sentences = _sentence_tokens(text)
     contexts: dict[str, set[str]] = defaultdict(set)
+    # Occurrences are counted in the same sweep that generates the grams;
+    # rescanning the reply once per distinct phrase is quadratic in reply
+    # length and unusable on real archives.
+    occurrence_counts: Counter[str] = Counter()
     for tokens in sentences:
-        for words in _grams(tokens, 1, 3):
-            if words[0] not in _FUNCTION_WORDS and words[-1] not in _FUNCTION_WORDS:
-                contexts[" ".join(words)].add("content")
-        for words in _grams(tokens, 2, 5):
-            function_words = {word for word in words if word in _FUNCTION_WORDS}
-            if function_words and function_words - _ARTICLES:
-                contexts[" ".join(words)].add("function")
+        for size in range(1, min(5, len(tokens)) + 1):
+            for start in range(len(tokens) - size + 1):
+                words = tokens[start : start + size]
+                phrase = " ".join(words)
+                occurrence_counts[phrase] += 1
+                if (
+                    size <= 3
+                    and words[0] not in _FUNCTION_WORDS
+                    and words[-1] not in _FUNCTION_WORDS
+                ):
+                    contexts[phrase].add("content")
+                if size >= 2:
+                    function_words = {word for word in words if word in _FUNCTION_WORDS}
+                    if function_words and function_words - _ARTICLES:
+                        contexts[phrase].add("function")
         if tokens[0] not in _ARTICLES:
             for size in range(2, min(5, len(tokens)) + 1):
                 contexts[" ".join(tokens[:size])].add("sentence_opener")
         for size in range(2, min(5, len(tokens)) + 1):
             contexts[" ".join(tokens[-size:])].add("sentence_ender")
 
-    features = []
-    for phrase, feature_contexts in contexts.items():
-        phrase_tokens = phrase.split()
-        occurrences = sum(
-            1
-            for tokens in sentences
-            for start in range(len(tokens) - len(phrase_tokens) + 1)
-            if tokens[start : start + len(phrase_tokens)] == phrase_tokens
+    features = [
+        ExtractedFeature(
+            phrase=phrase,
+            contexts=tuple(sorted(feature_contexts, key=_CONTEXT_ORDER.get)),
+            occurrences=occurrence_counts[phrase],
         )
-        features.append(
-            ExtractedFeature(
-                phrase=phrase,
-                contexts=tuple(sorted(feature_contexts, key=_CONTEXT_ORDER.get)),
-                occurrences=occurrences,
-            )
-        )
+        for phrase, feature_contexts in contexts.items()
+    ]
     return tuple(sorted(features, key=lambda feature: feature.phrase))
 
 
-def _contains_phrase(text: str | None, phrase: str) -> bool:
-    wanted = phrase.split()
-    return any(
-        tokens[start : start + len(wanted)] == wanted
-        for tokens in _sentence_tokens(text or "")
-        for start in range(len(tokens) - len(wanted) + 1)
-    )
+def _phrase_gram_set(text: str | None) -> set[str]:
+    """Every one-to-five-token run in the text, for O(1) phrase membership."""
+    grams: set[str] = set()
+    for tokens in _sentence_tokens(text or ""):
+        for words in _grams(tokens, 1, 5):
+            grams.add(" ".join(words))
+    return grams
 
 
 @dataclass(frozen=True)
@@ -440,6 +445,9 @@ def _candidate_summaries(
         for phrase, contexts in (wanted or {}).items()
     }
     for reply in corpus.replies:
+        # Tokenized once per reply; the old per-feature containment scan
+        # retokenized the preceding user message thousands of times.
+        preceding_grams = _phrase_gram_set(reply.preceding_user)
         for feature in extract_reply_features(reply.text):
             if wanted is not None and feature.phrase not in wanted:
                 continue
@@ -453,7 +461,7 @@ def _candidate_summaries(
             month = reply.date[:7] if reply.date and len(reply.date) >= 7 else "[unknown]"
             candidate.time_replies[month] += 1
             candidate.model_replies[reply.model or "[unknown]"] += 1
-            if _contains_phrase(reply.preceding_user, feature.phrase):
+            if feature.phrase in preceding_grams:
                 candidate.echo_replies += 1
 
     total_sessions = len({reply.session_id for reply in corpus.replies})
@@ -553,9 +561,29 @@ def discover_recurring_candidates(
     minimum_projects = (
         defaults.minimum_projects if _minimum_projects is None else _minimum_projects
     )
+    # Prune on distinct-session count first: holding full counting state for
+    # every distinct n-gram in the archive costs gigabytes, while the phrases
+    # that can pass eligibility are a tiny fraction of them.
+    session_counts: Counter[str] = Counter()
+    for _, session_replies in itertools.groupby(
+        sorted(corpus.replies, key=lambda reply: reply.session_id),
+        key=lambda reply: reply.session_id,
+    ):
+        session_phrases: set[str] = set()
+        for reply in session_replies:
+            session_phrases.update(
+                feature.phrase for feature in extract_reply_features(reply.text)
+            )
+        session_counts.update(session_phrases)
+    wanted: dict[str, tuple[str, ...]] = {
+        phrase: ()
+        for phrase, count in session_counts.items()
+        if count >= minimum_sessions
+    }
+    del session_counts
     candidates = [
         summary
-        for summary in _candidate_summaries(corpus).values()
+        for summary in _candidate_summaries(corpus, wanted).values()
         if summary.sessions >= minimum_sessions and summary.projects >= minimum_projects
     ]
     if collapse_overlaps:

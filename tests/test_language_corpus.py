@@ -214,6 +214,20 @@ def test_candidate_extraction_strips_noise_but_preserves_hyphens_and_boundaries(
         assert excluded not in serialized
 
 
+def test_occurrences_count_every_repeat_across_and_within_sentences():
+    language = _language()
+    features = language.extract_reply_features(
+        "The boundary holds. The boundary holds. "
+        "Verify the boundary twice. Verify the boundary twice."
+    )
+    by_phrase = {feature.phrase: feature for feature in features}
+
+    assert by_phrase["boundary"].occurrences == 4
+    assert by_phrase["boundary holds"].occurrences == 2
+    assert by_phrase["verify the boundary"].occurrences == 2
+    assert by_phrase["verify the boundary twice"].occurrences == 2
+
+
 def test_echo_is_measured_exactly_and_downranks_prompted_phrases():
     language = _language()
     replies = []
