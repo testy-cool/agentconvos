@@ -111,6 +111,25 @@ def _is_current_project(cwd: str, project_path: str) -> bool:
     return cwd == project_path
 
 
+# Colour only when a person is looking at a terminal. Piped and JSON output
+# stays plain so scripts and tests never see escape codes.
+_DIM, _BOLD, _CYAN, _GREEN, _MAGENTA, _YELLOW = "2", "1", "36", "32", "35", "33"
+
+
+def _c(text: str, code: str) -> str:
+    import sys as _sys
+    if not _sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _highlight(text: str, query: str) -> str:
+    """Bold every case-insensitive occurrence of query in text."""
+    if not query:
+        return text
+    return re.sub(re.escape(query), lambda m: _c(m.group(0), f"{_BOLD};{_YELLOW}"), text, flags=re.IGNORECASE)
+
+
 def _short_path(path: str) -> str:
     """Write a path under the home directory as ~/rest, the way the tree does."""
     home = str(Path.home())
@@ -2718,7 +2737,12 @@ def main() -> None:
                 for hit in hits:
                     slug_part = f"  {hit.meta.slug}" if hit.meta.slug else ""
                     ts = hit.meta.timestamp[:10] if hit.meta.timestamp else "?"
-                    print(f"  {ts}  {hit.meta.uuid}{slug_part}  turn {hit.turn_index+1:3d} ({hit.role:9s})  {hit.snippet}")
+                    role_colour = _GREEN if hit.role == "user" else _MAGENTA
+                    print(
+                        f"  {_c(ts, _DIM)}  {_c(hit.meta.uuid, _CYAN)}{slug_part}"
+                        f"  {_c(f'turn {hit.turn_index+1:3d}', _DIM)} ({_c(f'{hit.role:9s}', role_colour)})"
+                        f"  {_highlight(hit.snippet, args.search)}"
+                    )
                 if truncated:
                     print(
                         f"\nShowing the top {len(hits)} matches. "
@@ -2838,6 +2862,8 @@ def main() -> None:
                             break_on_hyphens=False,
                         ) or [(prefix if index == 0 else continuation).rstrip()]
                         for line in wrapped:
+                            if index == 0 and line is wrapped[0]:
+                                line = line.replace(label, _c(label, _DIM), 1)
                             print(line)
 
                 for record in records:
@@ -2845,7 +2871,8 @@ def main() -> None:
                     model = record["model"] or "?"
                     effort = record["effort"] or "?"
                     print(
-                        f"  [{record['source']}]  {_fmt_ts(record['timestamp'])}  {name}"
+                        f"  {_c('[' + record['source'] + ']', _DIM)}  {_c(_fmt_ts(record['timestamp']), _DIM)}"
+                        f"  {_c(name, _BOLD + ';' + _CYAN)}"
                         f"  · {record['turn_count']} turns"
                         f"  · model={model}  · effort={effort}"
                     )
@@ -2863,7 +2890,7 @@ def main() -> None:
                     summary = summaries.get(c.uuid, "")
                     src = c.source
                     size = _conversation_size(c.path)
-                    print(f"  {ts}  [{src}]  {name}  {_file_size_label(size)}")
+                    print(f"  {_c(ts, _DIM)}  {_c('[' + src + ']', _DIM)}  {_c(name, _BOLD + ';' + _CYAN)}  {_c(_file_size_label(size), _DIM)}")
                     if summary:
                         print(f"           {summary}")
         return
