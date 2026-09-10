@@ -4,11 +4,19 @@
 
 Find the decision, message, or session buried in your local coding-agent history.
 
-`agentconvos` treats the transcripts already written by Claude Code, Codex, Pi,
-Agy, OpenCode, and Clihow as the source of truth. The CLI scans them, builds a
-rebuildable local search index, and returns inspectable text or JSON. The TUI is
-an optional human view over the same local engine; the CLI is the executable
-contract for people, scripts, and agents.
+Search, catch up, resume, or hand a conversation to another agent without
+remembering which tool originally handled it. Agentconvos reads the local history
+already written by Claude Code, Codex, Pi, Agy, OpenCode, and Clihow.
+
+<img src="assets/demo-tui.svg" alt="The agentconvos browser searching conversations, with matching sessions on the left and a transcript preview on the right">
+
+Ask the archive a plain-language question and get an answer tied back to the
+matching session and turns:
+
+<img src="assets/demo-recall.png" alt="Agentconvos recall answering where a decision was made and citing the matching agent, date, session, and turns">
+
+The CLI builds a rebuildable local search index and returns inspectable text or
+JSON. The browser is an optional human view over the same local engine.
 
 ## One useful loop
 
@@ -40,13 +48,14 @@ The full search record also contains local file, project, and conversation
 identity fields so a follow-up command can open the exact evidence. Treat that
 JSON as private unless you explicitly redact it.
 
-## Install from source
+<img src="assets/demo-search.png" alt="Agentconvos searching a synthetic archive and listing the matching turns, roles, and excerpts">
+
+## Install
 
 Prerequisites: Python 3.12 or newer, [uv](https://docs.astral.sh/uv/), and at
 least one supported agent's local conversation history.
 
-The project is not published on PyPI and has no packaged release yet. Install
-the current public Git source explicitly:
+The project is not published on PyPI. Install the current public Git source:
 
 ```bash
 uv tool install "agentconvos @ git+https://github.com/testy-cool/agentconvos.git"
@@ -65,6 +74,28 @@ uv run agentconvos --help
 The installed command is `agentconvos`. It reads existing local transcripts;
 there is no import step, server, account, or agentconvos credential.
 
+## Start here
+
+Run these inside a project you have previously used with a supported agent:
+
+```bash
+agentconvos --context                 # what happened here recently?
+agentconvos --search "auth middleware" # where did we discuss this?
+agentconvos                           # browse everything interactively
+```
+
+<img src="assets/demo.png" alt="Agentconvos context showing recent Claude Code and Codex sessions for a synthetic project">
+
+Use `agentconvos --context --json` when another script or agent needs the same
+context as structured data.
+
+<details>
+<summary>See every CLI option</summary>
+
+<img src="assets/demo-help.png" alt="The current agentconvos help output listing every command-line option">
+
+</details>
+
 ## Common jobs
 
 ### Catch up on the current project
@@ -81,6 +112,17 @@ agentconvos --context --json
 up to five per source with dates, models, first/latest messages, and cached
 summaries. JSON includes complete normalized message text and private local
 metadata; pipe it only to tools you trust.
+
+### Ask the archive a question
+
+```bash
+agentconvos recall "Where did we decide to use soft deletes, and why?"
+```
+
+`recall` searches iteratively, inspects the promising turns, and answers with
+source, date, session, turn, and project-path citations. It uses an installed and
+authenticated Codex CLI by default. The optional Agy backend requires its separate
+local bridge.
 
 ### Search exact evidence
 
@@ -116,6 +158,8 @@ agentconvos --resume --dry-run
 agentconvos --resume <id> --dry-run
 agentconvos --handoff --dry-run
 agentconvos --convo codex --handoff claude --dry-run
+agentconvos --convo agy --handoff codex --yolo
+agentconvos --convo agy --handoff claude --yolo
 ```
 
 Resume continues the selected native session. Handoff exports normalized context
@@ -123,6 +167,9 @@ and prepares a fresh target-agent command. Without `--dry-run`, both can replace
 the current process with another agent CLI. Important current boundary:
 `--handoff --dry-run` still writes the local markdown export under `./output/`;
 it only suppresses launching the target agent. Resume dry-run does not write.
+`--yolo` explicitly selects the target agent's unattended mode: `codex --yolo`,
+`claude --dangerously-skip-permissions`, or
+`agy --dangerously-skip-permissions --prompt-interactive`.
 
 ### Measure recurring reply language
 
@@ -168,13 +215,24 @@ matching, cache invalidation, and claim rules.
 ### Browse interactively
 
 ```bash
-agentconvos --find "auth request id"   # optional fzf picker
-agentconvos                              # optional Textual TUI
+agentconvos --find "auth request id"  # fast fzf picker
+agentconvos                            # full-screen browser
 ```
 
 These are thin human surfaces over the same scanner, parser, search index, and
 resume/handoff primitives. `--find` requires `fzf`. The TUI adds preview,
 multi-select, export, and optional analysis; scripts should use the CLI.
+
+| Key | Action |
+|---|---|
+| `/` | Search conversation text |
+| `Enter` | Open the selected match |
+| `S` | Select multiple conversations |
+| `R` | Review and resume a session |
+| `H` | Hand off to a new session |
+| `E` | Export markdown |
+| `A` | Analyze with the configured model |
+| `Q` | Quit |
 
 ## Machine use and exits
 
