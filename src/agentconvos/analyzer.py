@@ -1,19 +1,18 @@
-"""Optional Gemini-powered conversation analysis. Requires GEMINI_API_KEY."""
+"""Model-backed conversation analysis over any OpenAI-compatible endpoint.
+
+The endpoint, key, and models come from ``llm_config``."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+from .llm_config import DEFAULT_MODEL, LLMConfig, load_config
 from .parser import Turn, to_markdown
 
 MODELS = [
-    "gemini-3-flash-preview",
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3.1-pro-preview",
+    DEFAULT_MODEL,
+    "gpt-5",
 ]
-
-DEFAULT_MODEL = MODELS[0]
 
 # ~300K tokens = ~1.2M chars. Conversations above this get chunked.
 CHUNK_THRESHOLD_CHARS = 1_200_000
@@ -21,8 +20,6 @@ CHUNK_TARGET_CHARS = 1_200_000
 
 # Deep mode: ~100K tokens = ~400K chars per chunk
 DEEP_CHUNK_TARGET_CHARS = 400_000
-DEEP_PRO_MODEL = "gemini-3.1-pro-preview"
-DEEP_FLASH_MODEL = "gemini-3-flash-preview"
 
 SINGLE_PROMPT = """Analyze this Claude Code conversation and extract:
 
@@ -124,31 +121,8 @@ CONVERSATIONS:
 {content}"""
 
 
-def load_env():
-    """Load GEMINI_API_KEY from .env files if not already set."""
-    if os.environ.get("GEMINI_API_KEY"):
-        return
-    # Check .env in cwd, then ~/.claude/convo-explorer/.env
-    candidates = [
-        Path(".env"),
-        Path(os.environ.get("USERPROFILE", Path.home())) / ".claude" / "convo-explorer" / ".env",
-    ]
-    for env_path in candidates:
-        if env_path.is_file():
-            for line in env_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("#") or "=" not in line:
-                    continue
-                key, _, val = line.partition("=")
-                key, val = key.strip(), val.strip().strip("'\"")
-                if key == "GEMINI_API_KEY" and val:
-                    os.environ["GEMINI_API_KEY"] = val
-                    return
-
-
-def gemini_available() -> bool:
-    load_env()
-    return bool(os.environ.get("GEMINI_API_KEY"))
+def llm_available() -> bool:
+    return bool(load_config().api_key)
 
 
 def _chunk_turns(turns: list[Turn], target_chars: int = CHUNK_TARGET_CHARS) -> list[list[Turn]]:
@@ -171,10 +145,13 @@ def _chunk_turns(turns: list[Turn], target_chars: int = CHUNK_TARGET_CHARS) -> l
     return chunks
 
 
-# Pricing per million tokens
+# Pricing per million tokens, keyed by model name without the provider prefix
 _PRICING = {
+    "gpt-5-mini": {"input": 0.25, "output": 2.00},
+    "gpt-5": {"input": 1.25, "output": 10.00},
     "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00},
     "gemini-3-flash-preview": {"input": 0.50, "output": 3.00},
+    "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50},
     "gemini-3.1-flash-lite-preview": {"input": 0.25, "output": 1.50},
 }
 
@@ -184,7 +161,7 @@ class _CostTracker:
         self.calls = []
 
     def record(self, model: str, input_tokens: int, output_tokens: int):
-        pricing = _PRICING.get(model, {"input": 1.0, "output": 5.0})
+        pricing = _PRICING.get(model.rsplit("/", 1)[-1], {"input": 1.0, "output": 5.0})
         cost = input_tokens * pricing["input"] / 1_000_000 + output_tokens * pricing["output"] / 1_000_000
         self.calls.append({"model": model, "input": input_tokens, "output": output_tokens, "cost": cost})
 
@@ -207,16 +184,30 @@ def get_cost_summary() -> str:
     return _tracker.summary()
 
 
-def _call_gemini(client, model: str, prompt: str, retries: int = 3) -> str:
-    """Single Gemini API call with retry on empty response or API error."""
+REQUEST_TIMEOUT_SECONDS = 900
+
+
+def _call_llm(cfg: LLMConfig, model: str, prompt: str, retries: int = 3) -> str:
+    """One chat-completions request with retry on transport error or empty reply."""
     import time
+
+    import httpx
+
+    text = ""
     for attempt in range(retries + 1):
         try:
-            response = client.models.generate_content(model=model, contents=prompt)
-            usage = getattr(response, "usage_metadata", None)
+            resp = httpx.post(
+                cfg.chat_url,
+                headers={"Authorization": f"Bearer {cfg.api_key}", "User-Agent": "agentconvos"},
+                json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            usage = data.get("usage") or {}
             if usage:
-                _tracker.record(model, getattr(usage, "prompt_token_count", 0) or 0, getattr(usage, "candidates_token_count", 0) or 0)
-            text = response.text or ""
+                _tracker.record(model, usage.get("prompt_tokens") or 0, usage.get("completion_tokens") or 0)
+            text = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
             if text.strip():
                 return text
         except Exception as e:
@@ -233,22 +224,21 @@ def _call_gemini(client, model: str, prompt: str, retries: int = 3) -> str:
 
 def analyze_single(
     turns: list[Turn],
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     prompt_template: str = SINGLE_PROMPT,
     on_progress: callable = None,
 ) -> str:
-    """Analyze a single conversation with Gemini. Auto-chunks if too large."""
+    """Analyze a single conversation. Auto-chunks if too large."""
     global _tracker
     _tracker = _CostTracker()
-    from google import genai
-
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    cfg = load_config()
+    model = model or cfg.model
     content = to_markdown(turns)
 
     # Check if chunking needed
     if len(content) <= CHUNK_THRESHOLD_CHARS:
         prompt = prompt_template.replace("{content}", content)
-        return _call_gemini(client, model, prompt)
+        return _call_llm(cfg, model, prompt)
 
     # Chunk it
     chunks = _chunk_turns(turns)
@@ -262,7 +252,7 @@ def analyze_single(
             on_progress(f"Analyzing chunk {i}/{total}...")
         chunk_md = to_markdown(chunk_turns)
         prompt = CHUNK_PROMPT.replace("{chunk_num}", str(i)).replace("{total_chunks}", str(total)).replace("{content}", chunk_md)
-        result = _call_gemini(client, model, prompt)
+        result = _call_llm(cfg, model, prompt)
         chunk_analyses.append(f"## Part {i}/{total}\n\n{result}")
 
     # Synthesis pass
@@ -270,7 +260,7 @@ def analyze_single(
         on_progress(f"Synthesizing {total} chunk analyses...")
     combined = "\n\n---\n\n".join(chunk_analyses)
     synth_prompt = SYNTHESIS_PROMPT.replace("{total_chunks}", str(total)).replace("{content}", combined)
-    return _call_gemini(client, model, synth_prompt)
+    return _call_llm(cfg, model, synth_prompt)
 
 
 def analyze_deep(
@@ -279,12 +269,11 @@ def analyze_deep(
     prompt_template: str | None = None,
     out_path: Path | None = None,
 ) -> str:
-    """Deep sequential analysis: pro for first chunk, flash continues with prior context."""
+    """Deep sequential analysis: pro model for first chunk and synthesis, default model in between."""
     global _tracker
     _tracker = _CostTracker()
-    from google import genai
-
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    cfg = load_config()
+    pro_model, flash_model = cfg.pro_model, cfg.model
     chunks = _chunk_turns(turns, target_chars=DEEP_CHUNK_TARGET_CHARS)
     total = len(chunks)
 
@@ -294,62 +283,61 @@ def analyze_deep(
 
     if total == 1:
         if on_progress:
-            on_progress(f"Single chunk — analyzing with {DEEP_PRO_MODEL}")
+            on_progress(f"Single chunk — analyzing with {pro_model}")
         content = to_markdown(chunks[0])
         prompt = (prompt_template or DEEP_FIRST_PROMPT).replace("{total_chunks}", "1").replace("{content}", content)
-        result = _call_gemini(client, DEEP_PRO_MODEL, prompt)
+        result = _call_llm(cfg, pro_model, prompt)
         _save_progress(result)
         return result
 
     if on_progress:
-        on_progress(f"Deep mode: {total} chunks (~100K tokens each). Pro for chunk 1, Flash for 2-{total}, Pro for final synthesis.")
+        on_progress(f"Deep mode: {total} chunks (~100K tokens each). {pro_model} for chunk 1, {flash_model} for 2-{total}, {pro_model} for final synthesis.")
 
     # Chunk 1: Pro sets the tone
     if on_progress:
-        on_progress(f"Chunk 1/{total} with {DEEP_PRO_MODEL} (setting the standard)...")
+        on_progress(f"Chunk 1/{total} with {pro_model} (setting the standard)...")
     chunk_md = to_markdown(chunks[0])
     prompt = DEEP_FIRST_PROMPT.replace("{total_chunks}", str(total)).replace("{content}", chunk_md)
-    running_analysis = _call_gemini(client, DEEP_PRO_MODEL, prompt)
+    running_analysis = _call_llm(cfg, pro_model, prompt)
     all_analyses = [f"## Chunk 1/{total}\n\n{running_analysis}"]
     _save_progress("\n\n---\n\n".join(all_analyses) + "\n\n---\n\n*Synthesis pending...*")
 
     # Chunks 2..N: Flash continues with previous analysis as context
     for i, chunk_turns in enumerate(chunks[1:], 2):
         if on_progress:
-            on_progress(f"Chunk {i}/{total} with {DEEP_FLASH_MODEL} (continuing with prior context)...")
+            on_progress(f"Chunk {i}/{total} with {flash_model} (continuing with prior context)...")
         chunk_md = to_markdown(chunk_turns)
         prev_context = running_analysis
         if len(prev_context) > 200_000:
             prev_context = prev_context[-200_000:]
         prompt = DEEP_CONTINUE_PROMPT.replace("{chunk_num}", str(i)).replace("{total_chunks}", str(total)).replace("{previous}", prev_context).replace("{content}", chunk_md)
-        result = _call_gemini(client, DEEP_FLASH_MODEL, prompt)
+        result = _call_llm(cfg, flash_model, prompt)
         running_analysis = result
         all_analyses.append(f"## Chunk {i}/{total}\n\n{result}")
         _save_progress("\n\n---\n\n".join(all_analyses) + "\n\n---\n\n*Synthesis pending...*")
 
     # Final synthesis with Pro
     if on_progress:
-        on_progress(f"Final synthesis with {DEEP_PRO_MODEL}...")
+        on_progress(f"Final synthesis with {pro_model}...")
     combined = "\n\n---\n\n".join(all_analyses)
     # If combined is too big for one pass, just use the last running analysis
     if len(combined) > CHUNK_THRESHOLD_CHARS:
         combined = combined[:CHUNK_THRESHOLD_CHARS]
     synth_prompt = DEEP_FINAL_PROMPT.replace("{total_chunks}", str(total)).replace("{content}", combined)
-    return _call_gemini(client, DEEP_PRO_MODEL, synth_prompt)
+    return _call_llm(cfg, pro_model, synth_prompt)
 
 
 def analyze_multi(
     conversations: list[tuple[str, list[Turn]]],
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     prompt_template: str = MULTI_PROMPT,
     on_progress: callable = None,
 ) -> str:
     """Analyze multiple conversations. Each tuple is (label, turns)."""
     global _tracker
     _tracker = _CostTracker()
-    from google import genai
-
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    cfg = load_config()
+    model = model or cfg.model
 
     parts = []
     for label, turns in conversations:
@@ -361,7 +349,7 @@ def analyze_multi(
     # Check if chunking needed
     if len(content) <= CHUNK_THRESHOLD_CHARS:
         prompt = prompt_template.replace("{count}", str(len(conversations))).replace("{content}", content)
-        return _call_gemini(client, model, prompt)
+        return _call_llm(cfg, model, prompt)
 
     # Too big — analyze each conversation individually, then synthesize
     total = len(conversations)
@@ -388,4 +376,4 @@ def analyze_multi(
     else:
         synth_prompt = MULTI_PROMPT.replace("{count}", str(total)).replace("{content}", combined)
 
-    return _call_gemini(client, model, synth_prompt)
+    return _call_llm(cfg, model, synth_prompt)

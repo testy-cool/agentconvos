@@ -66,6 +66,7 @@ def test_public_markdown_has_no_private_identity_or_broken_local_links():
 
     assert "/home/" not in combined
     assert "/Users/" not in combined
+    assert "bifrost" not in combined.casefold()
     assert not re.search(
         r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
         combined,
@@ -76,3 +77,17 @@ def test_public_markdown_has_no_private_identity_or_broken_local_links():
     image_links = re.findall(r'<img[^>]+src="(?!https?://)([^"]+)"', combined)
     for target in local_links + image_links:
         assert (ROOT / target.split("#", 1)[0]).exists(), target
+
+
+def test_public_docs_offer_a_portable_llm_setup():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    spec = (ROOT / "SPEC.md").read_text(encoding="utf-8")
+
+    for document in (readme, spec):
+        assert "OPENAI_API_KEY" in document
+        assert "OPENAI_BASE_URL" in document
+        assert "OPENAI_MODEL" in document
+        assert "AGENTCONVOS_LLM_BASE_URL" in document
+        assert "AGENTCONVOS_LLM_API_KEY" in document
+        assert "AGENTCONVOS_LLM_KEY_NAME" in document
+        assert "AGENTCONVOS_LLM_MODEL" in document

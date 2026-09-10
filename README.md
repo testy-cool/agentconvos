@@ -203,7 +203,34 @@ metadata and search caches under `~/.claude/convo-explorer/`.
 Model-backed commands are explicit:
 
 - `--analyze`, `--deep`, and `--summarize` send selected transcript content to
-  Gemini and require the `ai` extra plus configured credentials.
+  an OpenAI-compatible chat endpoint. For OpenAI, one familiar environment
+  variable is enough:
+
+  ```bash
+  export OPENAI_API_KEY=YOUR_API_KEY
+  agentconvos --llm-check
+  ```
+
+  The default endpoint is `https://api.openai.com/v1` and the default model is
+  `gpt-5-mini`. Standard `OPENAI_BASE_URL` and `OPENAI_MODEL` variables replace
+  either default. For another compatible service, use the dedicated settings:
+
+  | Variable | Default |
+  |---|---|
+  | `AGENTCONVOS_LLM_BASE_URL` | `OPENAI_BASE_URL` or the public OpenAI endpoint |
+  | `AGENTCONVOS_LLM_API_KEY` | `OPENAI_API_KEY` |
+  | `AGENTCONVOS_LLM_KEY_NAME` | optional key name already stored by the `llm` CLI |
+  | `AGENTCONVOS_LLM_MODEL` | `OPENAI_MODEL` or `gpt-5-mini` |
+  | `AGENTCONVOS_LLM_PRO_MODEL` | the main model (deep mode only) |
+
+  `AGENTCONVOS_LLM_API_KEY` takes precedence over the optional named-key lookup.
+  The named-key setting reads the existing `llm` CLI key store and does not copy
+  the secret into agentconvos configuration. Agentconvos settings take precedence
+  over standard OpenAI settings. The same variables work in `./.env` or
+  `~/.config/agentconvos/.env`; the older
+  `~/.claude/convo-explorer/.env` location remains readable. API keys are never
+  command-line arguments. `agentconvos --llm-check` prints the resolved endpoint,
+  models, key status, and key source, then sends one tiny request.
 - `recall` sends selected evidence through an installed/authenticated Codex CLI;
   its optional Agy backend depends on a separately installed local bridge.
 - `--habits --nlp` uses a local spaCy model and makes no model/API network call.

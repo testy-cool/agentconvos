@@ -99,7 +99,9 @@ derived artifacts.
 - Default scan, list, context, search, show, turns, concat, export, n-gram,
   habit, and TUI browsing paths make no model/API call.
 - `--analyze`, `--deep`, and `--summarize` send selected normalized content to
-  Gemini. They require the `ai` extra and credentials.
+  the configured OpenAI-compatible chat endpoint. OpenAI is the public default;
+  other compatible services are selected through environment or env-file settings.
+  They require an API key.
 - `recall` launches an installed authenticated Codex CLI by default. The Agy
   backend requires a separately installed local bridge and is not portable in
   every checkout.
@@ -136,6 +138,7 @@ Primary read/query actions:
 --find [QUERY]
 --ngrams
 --habits
+--llm-check
 ```
 
 Mutation/provider actions:
@@ -188,8 +191,9 @@ Rejecting every unknown/trailing token is deferred rather than claimed.
 | `--habits --nlp` | local analysis | report and descriptor cache | local trained model only |
 | `--resume` | provider launch | metadata cache | native provider after preview |
 | `--handoff` | local export + provider launch | `./output/*.md`, including dry-run | native provider unless dry-run |
-| `--summarize` | model-backed local cache | summary JSON | Gemini/Bifrost |
-| `--analyze`, `--deep` | model-backed analysis | analysis markdown | Gemini |
+| `--summarize` | model-backed local cache | summary JSON | configured chat endpoint |
+| `--analyze`, `--deep` | model-backed analysis | analysis markdown | configured chat endpoint |
+| `--llm-check` | configuration probe | none | configured chat endpoint, one tiny request |
 | `recall` | model-backed retrieval | temporary/state files | Codex or Agy backend |
 | bare `agentconvos` / `--find` | interactive read surface | caches; explicit action writes | only explicit analysis/provider actions |
 
@@ -306,16 +310,27 @@ establish causality, authorship, or inherent agent style.
 
 ## Configuration and credentials
 
-There is no general agentconvos config file or account. Applicable inputs are:
+There is no structured agentconvos config file or account. Model settings may be
+placed in env files. Applicable inputs are:
 
 | Input | Purpose |
 |---|---|
 | CLI flags | action, source/date selection, output, model, analysis options |
 | `USERPROFILE`, `CODEX_HOME`, `AGY_HOME`, `ANTIGRAVITY_CLI_HOME`, `XDG_DATA_HOME`, `CLIHOW_HOME` | selected source roots |
 | `AGENTCONVOS_LANGUAGE_CACHE` | NLP descriptor SQLite path |
-| `GEMINI_API_KEY` | Gemini analysis/deep mode |
-| `./.env`, `~/.claude/convo-explorer/.env` | fallback Gemini key lookup |
+| `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` | familiar defaults for OpenAI or another compatible service |
+| `AGENTCONVOS_LLM_BASE_URL`, `AGENTCONVOS_LLM_API_KEY`, `AGENTCONVOS_LLM_MODEL`, `AGENTCONVOS_LLM_PRO_MODEL` | higher-priority endpoint, credential, and model overrides dedicated to agentconvos |
+| `AGENTCONVOS_LLM_KEY_NAME` | optional name in the existing `llm` CLI key store; used only when no API-key environment value resolves |
+| `./.env`, `~/.config/agentconvos/.env` | project and user config files; the project file wins |
+| `~/.claude/convo-explorer/.env` | legacy user config path, read last for compatibility |
 | installed native CLIs | resume, handoff, and recall provider execution |
+
+The built-in endpoint is `https://api.openai.com/v1`; the built-in model is
+`gpt-5-mini`. The deep-mode model defaults to the resolved main model unless
+`AGENTCONVOS_LLM_PRO_MODEL` is set. Precedence is agentconvos process environment,
+standard OpenAI process environment, then the env files in the order above, then
+built-in public defaults. Within one env file, the agentconvos name wins over its
+OpenAI equivalent.
 
 Secrets are not expected as positional arguments. JSON and exports are not
 redacted merely because they are machine-readable.

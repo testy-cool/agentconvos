@@ -430,8 +430,8 @@ class HelpScreen(ModalScreen[None]):
         ("h", "Handoff into a new session"),
         ("e", "Export markdown"),
         ("c", "Export selected as one file"),
-        ("a", "Analyze with Gemini"),
-        ("m", "Cycle the Gemini model"),
+        ("a", "Analyze with the configured model"),
+        ("m", "Cycle the analysis model"),
         ("p", "Edit the analysis prompt"),
         ("s", "Select / deselect for bulk actions"),
         ("Ctrl+A", "Select all"),
@@ -637,7 +637,14 @@ class ConvoExplorer(App):
         self.current_meta: ConversationMeta | None = None
         self._dragging_sidebar = False
         self._model_index = 0
-        self.gemini_model = MODELS[0]
+        from .llm_config import DEFAULT_BASE_URL, load_config
+
+        llm_config = load_config()
+        configured_model = llm_config.model
+        self._analysis_models = [configured_model]
+        if llm_config.base_url.rstrip("/") == DEFAULT_BASE_URL:
+            self._analysis_models.extend(m for m in MODELS if m != configured_model)
+        self.gemini_model = self._analysis_models[0]
         self.custom_single_prompt: str = SINGLE_PROMPT
         self.custom_multi_prompt: str = MULTI_PROMPT
         self._editing_prompt: str = "single"  # which prompt is being edited
@@ -1522,7 +1529,7 @@ History appears immediately. Full-text results arrive live while indexing runs i
     def _update_selection_count(self) -> None:
         selected = self._get_selected_nodes()
         status = self.query_one("#status-bar", Static)
-        model_short = self.gemini_model.replace("-preview", "").replace("[", "(").replace("]", ")")
+        model_short = self.gemini_model.rsplit("/", 1)[-1].replace("-preview", "").replace("[", "(").replace("]", ")")
         if selected:
             tok = self._estimate_tokens(selected)
             status.update(f" {len(selected)} selected · {tok} · A analyze · E export · M={model_short}")
@@ -1533,8 +1540,8 @@ History appears immediately. Full-text results arrive live while indexing runs i
     # --- Model ---
 
     def action_cycle_model(self) -> None:
-        self._model_index = (self._model_index + 1) % len(MODELS)
-        self.gemini_model = MODELS[self._model_index]
+        self._model_index = (self._model_index + 1) % len(self._analysis_models)
+        self.gemini_model = self._analysis_models[self._model_index]
         self.notify(f"Model: {self.gemini_model}")
         self._update_selection_count()
 
@@ -1695,16 +1702,13 @@ History appears immediately. Full-text results arrive live while indexing runs i
         else:
             subprocess.Popen(["xdg-open", str(folder)])
 
-    # --- Gemini Analysis ---
+    # --- Model-backed analysis ---
 
-    def _check_gemini(self) -> bool:
-        try:
-            from .analyzer import gemini_available
-        except ImportError:
-            self.notify("Run: uv sync --extra ai", severity="error")
-            return False
-        if not gemini_available():
-            self.notify("Set GEMINI_API_KEY env var", severity="error")
+    def _check_llm(self) -> bool:
+        from .analyzer import llm_available
+        from .llm_config import missing_key_message
+        if not llm_available():
+            self.notify(missing_key_message(), severity="error")
             return False
         return True
 
@@ -1712,7 +1716,7 @@ History appears immediately. Full-text results arrive live while indexing runs i
         if self._analyzing:
             self.notify("Analysis already running — Esc to cancel", severity="warning")
             return
-        if not self._check_gemini():
+        if not self._check_llm():
             return
         selected = self._get_selected_nodes()
         model = self.gemini_model
@@ -1763,7 +1767,7 @@ History appears immediately. Full-text results arrive live while indexing runs i
             header = f"## Analysis: {name}\n*Saved to {path}*\n\n---\n\n"
             self.call_from_thread(self._set_preview, header + result, 0)
             self.call_from_thread(
-                lambda: self.query_one("#right-title", Static).update("GEMINI ANALYSIS")
+                lambda: self.query_one("#right-title", Static).update("ANALYSIS")
             )
             self.call_from_thread(self._refresh_analyzed_markers)
         except Exception as e:
@@ -1800,7 +1804,7 @@ History appears immediately. Full-text results arrive live while indexing runs i
                 return
             self.call_from_thread(
                 lambda: self.query_one("#right-title", Static).update(
-                    f"ANALYZING: waiting for Gemini ({count} convos)..."
+                    f"ANALYZING: waiting for the model ({count} convos)..."
                 )
             )
             result = analyze_multi(conversations, model=model, prompt_template=self.custom_multi_prompt)
@@ -1816,7 +1820,7 @@ History appears immediately. Full-text results arrive live while indexing runs i
             header = f"## Cross-session Analysis ({count} conversations)\n*Saved to {path}*\n\n---\n\n"
             self.call_from_thread(self._set_preview, header + result, 0)
             self.call_from_thread(
-                lambda: self.query_one("#right-title", Static).update(f"GEMINI ANALYSIS ({count} convos)")
+                lambda: self.query_one("#right-title", Static).update(f"ANALYSIS ({count} convos)")
             )
             self.call_from_thread(self._refresh_analyzed_markers)
         except Exception as e:
@@ -2233,10 +2237,13 @@ def main() -> None:
     parser.add_argument("--analyze", nargs="+", metavar="ID_OR_PATH", help="Analyze conversations (JSONL paths, UUIDs, or slugs)")
     parser.add_argument("--concat", nargs="+", metavar="ID_OR_PATH", help="Export concatenated markdown (JSONL paths, UUIDs, or slugs)")
     parser.add_argument("--turns", metavar="ID_OR_PATH", help="Export one normalized conversation to stdout")
-    parser.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL, help="Gemini model")
+    parser.add_argument("--model", default=None, metavar="NAME",
+                        help=f"Model for --analyze (default: configured model or {DEFAULT_MODEL}; known: {', '.join(MODELS)})")
+    parser.add_argument("--llm-check", action="store_true",
+                        help="Print the resolved analysis endpoint, model, and key source, then send one tiny request")
     parser.add_argument("--prompt", metavar="TEXT_OR_FILE", help="Custom analysis prompt (inline text or path to .txt/.md file). Use {content} as placeholder for conversation text, {count} for multi-convo count.")
     parser.add_argument("--detail", choices=["text", "tools", "results", "full", "thinking"], default=None, help="Detail level: text, tools, results, full, thinking (text + reasoning blocks)")
-    parser.add_argument("--deep", nargs="+", metavar="ID_OR_PATH", help="Deep analysis: Pro for first chunk, Flash continues with context, Pro synthesizes. Uses full detail.")
+    parser.add_argument("--deep", nargs="+", metavar="ID_OR_PATH", help="Deep analysis: configured pro model opens and synthesizes; the main model continues. Uses full detail.")
     parser.add_argument(
         "--search",
         metavar="QUERY",
@@ -2316,7 +2323,7 @@ def main() -> None:
     parser.add_argument("--export-all", metavar="DIR", help="Export every conversation as individual markdown files to DIR")
     parser.add_argument("--projects-dir", nargs="+", metavar="DIR", help="Additional projects directories to scan (e.g. copied from other machines)")
     parser.add_argument("--summarize", action="store_true",
-                        help="Generate missing or stale two-pass session summaries via Gemini")
+                        help="Generate missing or stale two-pass session summaries via the configured model")
     parser.add_argument("--json", action="store_true",
                         help="Output machine-readable JSON (use with --list, --search, --last, --context, --turns)")
     parser.add_argument("--source", choices=["claude", "codex", "pi", "agy", "opencode", "clihow"],
@@ -3076,6 +3083,22 @@ def main() -> None:
             _open_in_editor(out_path)
         return
 
+    if args.llm_check:
+        from .analyzer import _call_llm
+        from .llm_config import load_config, missing_key_message
+        cfg = load_config()
+        print(cfg.describe())
+        if not cfg.api_key:
+            print(f"\n{missing_key_message()}")
+            sys.exit(1)
+        try:
+            reply = _call_llm(cfg, cfg.model, "Reply with the single word OK.", retries=0)
+        except Exception as e:
+            print(f"\nRequest failed: {e}")
+            sys.exit(1)
+        print(f"\nReply from {cfg.model}: {reply.strip()[:80]}")
+        return
+
     if args.analyze or args.deep:
         from .analyzer import (
             MULTI_PROMPT,
@@ -3083,11 +3106,14 @@ def main() -> None:
             analyze_deep,
             analyze_multi,
             analyze_single,
-            gemini_available,
+            llm_available,
         )
-        if not gemini_available():
-            print("Error: set GEMINI_API_KEY env var")
-            return
+        from .llm_config import load_config, missing_key_message
+        if not llm_available():
+            print(f"Error: {missing_key_message()}")
+            sys.exit(1)
+        cfg = load_config()
+        print(f"  endpoint {cfg.chat_url} · model {args.model or cfg.model} · key from {cfg.key_source}", flush=True)
         # Resolve custom prompt (inline text or file path)
         custom_prompt = None
         if args.prompt:
@@ -3139,9 +3165,9 @@ def main() -> None:
 
     if args.summarize:
         from .scanner import scan_projects
-        from .summarize import _load_api_key, summarize_all
+        from .summarize import _resolve, summarize_all
         try:
-            api_key = _load_api_key()
+            api_key = _resolve().api_key
         except RuntimeError as e:
             print(f"Error: {e}")
             raise SystemExit(1) from e

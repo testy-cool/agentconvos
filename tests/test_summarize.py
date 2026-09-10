@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from agentconvos.llm_config import LLMConfig
 from agentconvos.parser import DETAIL_TEXT, ConversationMeta, Turn
 from agentconvos.summarize import _needs_summary, summarize_session
 
@@ -63,7 +64,7 @@ class SummarizeSessionTests(unittest.TestCase):
             with (
                 patch("agentconvos.summarize.SUMMARIES_DIR", Path(tmp) / "summaries"),
                 patch("agentconvos.summarize.parse_jsonl", return_value=turns) as parse,
-                patch("agentconvos.summarize._call_bifrost", return_value="Session summary"),
+                patch("agentconvos.summarize._call_llm", return_value="Session summary"),
             ):
                 summarize_session(_meta(path), "test-key")
 
@@ -102,6 +103,26 @@ class SummarizeSessionTests(unittest.TestCase):
             {"role": "assistant", "content": "Draft recap from the complete transcript."},
         )
         self.assertEqual(second_messages[-1]["role"], "user")
+
+    def test_summaries_use_the_configured_endpoint_and_model(self):
+        turns = [Turn("user", "Hi."), Turn("assistant", "Hello.")]
+        cfg = LLMConfig("http://gw/v1", "k", "custom/model", "custom/pro", "test")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            with (
+                patch("agentconvos.summarize.SUMMARIES_DIR", Path(tmp) / "summaries"),
+                patch("agentconvos.summarize.parse_jsonl", return_value=turns),
+                patch("agentconvos.summarize.load_config", return_value=cfg),
+                patch("httpx.post", side_effect=[_Response("draft"), _Response("Done.")]) as post,
+            ):
+                summarize_session(_meta(path))
+            cached = json.loads((Path(tmp) / "summaries" / "summary-session.json").read_text())
+
+        self.assertEqual(post.call_args.args[0], "http://gw/v1/chat/completions")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "custom/model")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer k")
+        self.assertEqual(cached["model"], "custom/model")
 
 
 if __name__ == "__main__":
