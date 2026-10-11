@@ -260,12 +260,39 @@ class ConversationSearchIndex:
         return f'"{" ".join(escaped)}"'
 
     @classmethod
+    def _term_expressions(cls, terms: list[str]) -> list[str]:
+        """Let each single word also match when joined to its neighbour.
+
+        People write product names both ways, so "touch designer" has to find
+        a transcript that only ever wrote "touchdesigner".
+        """
+        words = [
+            tokens[0] if len(tokens := re.findall(r"\w+", term, flags=re.UNICODE)) == 1 else None
+            for term in terms
+        ]
+        expressions = []
+        for i, term in enumerate(terms):
+            expression = cls._term_expression(term)
+            if not expression:
+                continue
+            word = words[i]
+            if word is not None:
+                joined = [
+                    f'"{left + right}"*'
+                    for left, right in (
+                        (words[i - 1] if i > 0 else None, word),
+                        (word, words[i + 1] if i + 1 < len(words) else None),
+                    )
+                    if left is not None and right is not None
+                ]
+                if joined:
+                    expression = "(" + " OR ".join([expression, *joined]) + ")"
+            expressions.append(expression)
+        return expressions
+
+    @classmethod
     def _match_expression(cls, query: str) -> str:
-        return " AND ".join(
-            expression
-            for term in parse_search_terms(query)
-            if (expression := cls._term_expression(term))
-        )
+        return " AND ".join(cls._term_expressions(parse_search_terms(query)))
 
     def search(
         self,
@@ -331,11 +358,7 @@ class ConversationSearchIndex:
         """
         terms = parse_search_terms(query)
         all_expression = self._match_expression(query)
-        any_expression = " OR ".join(
-            expression
-            for term in terms
-            if (expression := self._term_expression(term))
-        )
+        any_expression = " OR ".join(self._term_expressions(terms))
         if not terms or not all_expression or not any_expression or not self.path.exists():
             return []
 
@@ -376,6 +399,7 @@ class ConversationSearchIndex:
             connection.close()
 
         phrase = " ".join(terms)
+        joined_phrase = "".join(terms) if len(terms) > 1 else ""
         scored: list[tuple[tuple[int, int, int, float, str], SearchHit]] = []
         for _uuid, path_key, turn_index, role, timestamp, content, fts_rank in rows:
             meta = metas_by_path.get(path_key)
@@ -386,7 +410,9 @@ class ConversationSearchIndex:
             matched_terms = [term for term in terms if term in folded]
             if not matched_terms:
                 continue
-            exact_phrase = bool(phrase and phrase in folded)
+            exact_phrase = bool(phrase and phrase in folded) or bool(
+                joined_phrase and joined_phrase in folded
+            )
             occurrences = sum(folded.count(term) for term in matched_terms)
             score = (
                 int(exact_phrase),

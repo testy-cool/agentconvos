@@ -73,6 +73,37 @@ class ConversationSearchIndexTests(unittest.TestCase):
         self.assertIn("auth request", hits[0].snippet.casefold())
         self.assertIn("split-session", {hit.meta.uuid for hit in hits})
 
+    def test_two_words_find_a_conversation_that_wrote_them_as_one(self):
+        """People type product names both ways. Searching "touch designer"
+        must find a session that only ever wrote "touchdesigner"."""
+        from agentconvos.search_index import ConversationSearchIndex
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            joined_path = root / "joined.jsonl"
+            stray_path = root / "stray.jsonl"
+            joined_path.write_text("joined", encoding="utf-8")
+            stray_path.write_text("stray", encoding="utf-8")
+            joined = _meta(joined_path, "joined-session")
+            stray = _meta(stray_path, "stray-session")
+            turns = {
+                joined_path: [
+                    Turn("user", "can you check if i have touchdesigner installed?"),
+                    Turn("assistant", "I found the installer in Downloads."),
+                ],
+                stray_path: [
+                    Turn("assistant", "Do not touch the designer handoff, touching it twice breaks it."),
+                ],
+            }
+
+            index = ConversationSearchIndex(root / "search.sqlite3")
+            index.sync([joined, stray], parse_conversation=turns.__getitem__)
+            documents = index.search("touch designer")
+            hits = index.search_hits("touch designer", [joined, stray])
+
+        self.assertIn("joined-session", documents)
+        self.assertEqual((hits[0].meta.uuid, hits[0].turn_index), ("joined-session", 0))
+
     def test_sync_backfills_turn_rows_for_an_existing_conversation_index(self):
         from agentconvos.search_index import ConversationSearchIndex
 
