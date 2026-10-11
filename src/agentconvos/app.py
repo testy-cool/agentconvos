@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from unicodedata import east_asian_width
@@ -501,6 +501,12 @@ class _FilterResult:
     projects: list[Project]
     indexed_matches: dict[str, str]
     filtered_count: int
+    # Conversation uuid -> position in relevance order, best first.
+    ranks: dict[str, int] = field(default_factory=dict)
+
+    def best_rank(self, conversations) -> int:
+        unranked = len(self.ranks)
+        return min((self.ranks.get(c.uuid, unranked) for c in conversations), default=unranked)
 
 
 class SearchInput(Input):
@@ -911,12 +917,25 @@ History appears immediately. Full-text results arrive live while indexing runs i
             indexed_matches = self._conversation_index.search(filter_text)
         except Exception:
             indexed_matches = {}
+        # Each conversation's best turn, best first, so the tree leads with
+        # what matched rather than with whatever was newest.
+        try:
+            best_hits = self._conversation_index.best_hits(
+                filter_text,
+                [c for project in projects for c in project.conversations],
+                limit=_FILTER_RESULT_LIMIT,
+            )
+        except Exception:
+            best_hits = []
+        ranks = {hit.meta.uuid: position for position, hit in enumerate(best_hits)}
+        indexed_matches = {
+            **indexed_matches,
+            **{hit.meta.uuid: hit.snippet for hit in best_hits},
+        }
 
         summaries = self._summaries if summaries is None else summaries
-        filtered_projects: list[Project] = []
-        filtered_count = 0
+        matched: list[tuple[Project, ConversationMeta]] = []
         for project in projects:
-            matches = []
             for conversation in project.conversations:
                 metadata = "\n".join(
                     (
@@ -930,23 +949,23 @@ History appears immediately. Full-text results arrive live while indexing runs i
                 if conversation.uuid in indexed_matches or all(
                     term in metadata for term in terms
                 ):
-                    matches.append(conversation)
+                    matched.append((project, conversation))
 
-            if not matches:
-                continue
-            remaining = _FILTER_RESULT_LIMIT - filtered_count
-            if remaining <= 0:
-                break
-            visible = matches[:remaining]
-            filtered_projects.append(
-                Project(project.folder_name, project.display_path, visible)
-            )
-            filtered_count += len(visible)
+        # Stable, so conversations without a ranked turn keep their old order.
+        matched.sort(key=lambda item: ranks.get(item[1].uuid, len(ranks)))
+        visible = matched[:_FILTER_RESULT_LIMIT]
+        grouped: dict[int, tuple[Project, list[ConversationMeta]]] = {}
+        for project, conversation in visible:
+            grouped.setdefault(id(project), (project, []))[1].append(conversation)
 
         return _FilterResult(
-            projects=filtered_projects,
+            projects=[
+                Project(project.folder_name, project.display_path, conversations)
+                for project, conversations in grouped.values()
+            ],
             indexed_matches=indexed_matches,
-            filtered_count=filtered_count,
+            filtered_count=len(visible),
+            ranks=ranks,
         )
 
     def _schedule_filter(self) -> None:
@@ -1078,6 +1097,12 @@ History appears immediately. Full-text results arrive live while indexing runs i
         for s in _SOURCE_ORDER:
             if s not in source_order and s in by_source:
                 source_order.append(s)
+        # While searching, the source holding the best match comes first.
+        source_order.sort(
+            key=lambda s: filter_result.best_rank(
+                c for items in by_source[s].values() for _, _, cv in items for c in cv
+            )
+        )
 
         total_projects = 0
         for source in source_order:
@@ -1109,6 +1134,11 @@ History appears immediately. Full-text results arrive live while indexing runs i
                     pg_order.append(k)
             if "Other" in path_groups and "Other" not in pg_order:
                 pg_order.append("Other")
+            pg_order.sort(
+                key=lambda g: filter_result.best_rank(
+                    c for _, _, cv in path_groups[g] for c in cv
+                )
+            )
 
             for gkey in pg_order:
                 items = path_groups[gkey]
@@ -1135,6 +1165,7 @@ History appears immediately. Full-text results arrive live while indexing runs i
                         cwd, _project_real_path(item[1], item[2])
                     )
                 )
+                ordered.sort(key=lambda item: filter_result.best_rank(item[2]))
 
                 for rel_label, proj, convos in ordered:
                     project_path = _project_real_path(proj, convos)

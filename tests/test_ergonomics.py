@@ -510,6 +510,61 @@ class TuiErgonomicsTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("drops request IDs", result_nodes[0].label.plain)
                     parse_transcript.assert_not_called()
 
+    async def test_search_lists_the_best_match_first_not_the_newest(self):
+        """A newer session that only says "touch" in one turn and "designer"
+        in another must not bury an older one about TouchDesigner."""
+        from agentconvos.search_index import ConversationSearchIndex
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            weak_dir = root / "busy-project"
+            strong_dir = root / "quiet-project"
+            weak_dir.mkdir()
+            strong_dir.mkdir()
+            weak_path = weak_dir / "weak.jsonl"
+            strong_path = strong_dir / "strong.jsonl"
+            weak_path.write_text("weak", encoding="utf-8")
+            strong_path.write_text("strong", encoding="utf-8")
+            weak = _meta(weak_path, "weak-session", "2026-10-10T22:23:00", weak_dir)
+            strong = _meta(strong_path, "strong-session", "2026-10-09T14:04:00", strong_dir)
+            turns = {
+                weak_path: [
+                    Turn("user", "Do not touch the pipeline."),
+                    Turn("assistant", "The designer handoff is ready."),
+                ],
+                strong_path: [
+                    Turn("user", "can you check if i have touchdesigner installed?"),
+                ],
+            }
+            index = ConversationSearchIndex(root / "search.sqlite3")
+            index.sync([weak, strong], parse_conversation=turns.__getitem__)
+            projects = [
+                Project("busy", str(weak_dir), [weak]),
+                Project("quiet", str(strong_dir), [strong]),
+            ]
+
+            with patch("agentconvos.app.scan_projects", return_value=projects):
+                tui = app_module.ConvoExplorer(search_index=index)
+                async with tui.run_test(size=(180, 36)) as pilot:
+                    await pilot.pause()
+                    tui.query_one("#filter-input", Input).value = "touch designer"
+                    for _ in range(30):
+                        await pilot.pause(0.03)
+                        result_nodes = [
+                            node
+                            for node in tui._walk_tree_nodes()
+                            if node.data and node.data.kind == "convo"
+                        ]
+                        # History already lists both; wait for the search snippet.
+                        if any("touchdesigner" in node.label.plain for node in result_nodes):
+                            break
+
+                    self.assertEqual(
+                        [node.data.meta.uuid for node in result_nodes],
+                        ["strong-session", "weak-session"],
+                    )
+                    self.assertIn("touchdesigner", result_nodes[0].label.plain)
+
     async def test_filter_input_debounces_intermediate_queries(self):
         class RecordingIndex:
             def __init__(self):

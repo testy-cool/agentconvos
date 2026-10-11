@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -29,6 +30,16 @@ class IndexSyncStats:
     unchanged: int = 0
     removed: int = 0
     failed: int = 0
+
+
+@dataclass(frozen=True)
+class _RankedTurn:
+    score: tuple[int, int, int, float, str]
+    meta: ConversationMeta
+    turn_index: int
+    role: str
+    content: str
+    matched_terms: list[str]
 
 
 class ConversationSearchIndex:
@@ -356,6 +367,53 @@ class ConversationSearchIndex:
         turns are ranked by exact phrase, term coverage, frequency, and FTS
         relevance.
         """
+        ranked = self._ranked_turns(
+            query, conversations, candidate_limit=min(max(limit * 100, 5000), 20_000)
+        )
+        return [self._hit(turn) for turn in ranked[:limit]]
+
+    def best_hits(
+        self,
+        query: str,
+        conversations: Iterable[ConversationMeta],
+        limit: int = 200,
+        *,
+        time_budget: float = 0.5,
+    ) -> list[SearchHit]:
+        """Return each matching conversation once, at its best turn, best first.
+
+        Returns nothing when ranking would take longer than ``time_budget``
+        seconds. One-letter prefixes match most of the archive, and scoring
+        all of it would stall every keystroke.
+        """
+        best: dict[str, _RankedTurn] = {}
+        ranked = self._ranked_turns(
+            query, conversations, candidate_limit=5000, time_budget=time_budget
+        )
+        for turn in ranked:
+            best.setdefault(str(turn.meta.path), turn)
+            if len(best) >= limit:
+                break
+        return [self._hit(turn) for turn in best.values()]
+
+    @staticmethod
+    def _hit(turn: _RankedTurn) -> SearchHit:
+        # Snippets cost more than the ranking, so only shown turns get one.
+        return SearchHit(
+            meta=turn.meta,
+            turn_index=turn.turn_index,
+            role=turn.role,
+            snippet=_search_snippet(turn.content, turn.matched_terms),
+        )
+
+    def _ranked_turns(
+        self,
+        query: str,
+        conversations: Iterable[ConversationMeta],
+        *,
+        candidate_limit: int,
+        time_budget: float | None = None,
+    ) -> list[_RankedTurn]:
         terms = parse_search_terms(query)
         all_expression = self._match_expression(query)
         any_expression = " OR ".join(self._term_expressions(terms))
@@ -365,12 +423,14 @@ class ConversationSearchIndex:
         metas_by_path = {str(meta.path): meta for meta in conversations}
         if not metas_by_path:
             return []
-        candidate_limit = min(max(limit * 100, 5000), 20_000)
         connection = sqlite3.connect(
             f"file:{self.path}?mode=ro",
             uri=True,
             timeout=1,
         )
+        if time_budget is not None:
+            deadline = time.monotonic() + time_budget
+            connection.set_progress_handler(lambda: time.monotonic() > deadline, 10_000)
         try:
             rows = connection.execute(
                 """
@@ -400,7 +460,7 @@ class ConversationSearchIndex:
 
         phrase = " ".join(terms)
         joined_phrase = "".join(terms) if len(terms) > 1 else ""
-        scored: list[tuple[tuple[int, int, int, float, str], SearchHit]] = []
+        ranked: list[_RankedTurn] = []
         for _uuid, path_key, turn_index, role, timestamp, content, fts_rank in rows:
             meta = metas_by_path.get(path_key)
             if meta is None:
@@ -421,17 +481,16 @@ class ConversationSearchIndex:
                 -float(fts_rank or 0),
                 str(timestamp or meta.timestamp or ""),
             )
-            scored.append(
-                (
-                    score,
-                    SearchHit(
-                        meta=meta,
-                        turn_index=int(turn_index),
-                        role=str(role or ""),
-                        snippet=_search_snippet(content, matched_terms),
-                    ),
+            ranked.append(
+                _RankedTurn(
+                    score=score,
+                    meta=meta,
+                    turn_index=int(turn_index),
+                    role=str(role or ""),
+                    content=content,
+                    matched_terms=matched_terms,
                 )
             )
 
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [hit for _, hit in scored[:limit]]
+        ranked.sort(key=lambda turn: turn.score, reverse=True)
+        return ranked
