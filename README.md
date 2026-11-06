@@ -151,6 +151,25 @@ agentconvos --concat <id> --detail tools
 tool results, reasoning blocks, and injected bootstrap metadata. `tools`,
 `results`, `thinking`, and `full` deliberately expose progressively more.
 
+### Mark each agent reply Pass or Fail
+
+```bash
+agentconvos annotate            # the latest conversation in this folder
+agentconvos annotate <id>       # a specific one
+agentconvos annotate <id> --notes
+```
+
+`annotate` opens a local review dashboard with one record per agent reply,
+shown beside the user message it answered. Mark each reply Pass or Fail, write
+a note, or select words in a reply to comment on them. The notes are kept in
+`~/.local/share/agentconvos/annotate/`, so running the command again on the same
+conversation keeps them and adds any newer replies. `--notes` prints them as
+Markdown with the agent's folder and its `AGENTS.md` or `CLAUDE.md`, ready to
+hand to an agent that will edit those instructions.
+
+The dashboard is the separate `vx-annotate` engine. Put `vx-annotate` on PATH
+or set `AGENTCONVOS_ANNOTATE_ENGINE` to its launcher.
+
 ### Preview resume or handoff
 
 ```bash

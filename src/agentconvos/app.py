@@ -2271,11 +2271,53 @@ def main() -> None:
             raise SystemExit(return_code)
         return
 
+    if len(sys.argv) > 1 and sys.argv[1] == "annotate":
+        from .annotate import run_annotate
+
+        annotate_parser = argparse.ArgumentParser(
+            prog="agentconvos annotate",
+            description=(
+                "Open a Pass/Fail review dashboard with one record per agent reply, "
+                "or print the notes written in it."
+            ),
+        )
+        annotate_parser.add_argument(
+            "session", nargs="?", metavar="ID_OR_PATH",
+            help="Conversation to review (default: the latest one in this folder)",
+        )
+        annotate_parser.add_argument("--notes", action="store_true", help="Print the review notes as Markdown and exit")
+        annotate_parser.add_argument("--port", type=int, default=0, help="Dashboard port (default: any free port)")
+        annotate_parser.add_argument("--no-open", action="store_true", help="Do not open the dashboard in a browser")
+        annotate_args = annotate_parser.parse_args(sys.argv[2:])
+
+        if annotate_args.session:
+            path = _resolve_args([annotate_args.session])[0]
+        else:
+            from .scanner import scan_projects
+
+            cwd = os.path.realpath(os.getcwd())
+            here = [
+                c for p in scan_projects() for c in p.conversations
+                if c.cwd and os.path.realpath(c.cwd) == cwd
+            ]
+            if not here:
+                print(f"No conversations found for {cwd}", file=sys.stderr)
+                raise SystemExit(1)
+            path = max(here, key=lambda c: c.timestamp or "").path
+        return_code = run_annotate(
+            Path(path), port=annotate_args.port, notes=annotate_args.notes,
+            open_browser=not annotate_args.no_open,
+        )
+        if return_code:
+            raise SystemExit(return_code)
+        return
+
     parser = argparse.ArgumentParser(
         description="Browse and analyze Claude Code, Codex, Pi, Agy, and OpenCode conversations",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            'Commands:\n  recall [--backend {luna,agy}] "question"  Answer from evidence in the local conversation archive\n\n'
+            'Commands:\n  recall [--backend {luna,agy}] "question"  Answer from evidence in the local conversation archive\n'
+            '  annotate [ID_OR_PATH] [--notes]           Mark each agent reply Pass/Fail with a note, then print the notes\n\n'
             'Run: agentconvos recall "question"'
         ),
     )
