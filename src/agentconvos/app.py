@@ -2312,12 +2312,21 @@ def main() -> None:
             raise SystemExit(return_code)
         return
 
+    if len(sys.argv) > 1 and sys.argv[1] == "commands":
+        try:
+            _run_commands(sys.argv[2:])
+        except BrokenPipeError:
+            # Piped into head or less and closed early: not an error.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return
+
     parser = argparse.ArgumentParser(
         description="Browse and analyze Claude Code, Codex, Pi, Agy, and OpenCode conversations",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             'Commands:\n  recall [--backend {luna,agy}] "question"  Answer from evidence in the local conversation archive\n'
-            '  annotate [ID_OR_PATH] [--notes]           Mark each agent reply Pass/Fail with a note, then print the notes\n\n'
+            '  annotate [ID_OR_PATH] [--notes]           Mark each agent reply Pass/Fail with a note, then print the notes\n'
+            '  commands [group] [ID_OR_PATH ...]         Print every shell command in full, or find repeated ones to shorten\n\n'
             'Run: agentconvos recall "question"'
         ),
     )
@@ -3350,6 +3359,71 @@ def _open_in_sublime(content: str, meta=None):
     tmp.write_text(content, encoding="utf-8")
     print(f"Opening in editor: {tmp}")
     _open_in_editor(tmp)
+
+
+def _run_commands(argv: list[str]) -> None:
+    """``agentconvos commands [group] [ID_OR_PATH ...]``."""
+    import argparse
+    import json
+    import sys
+    from datetime import date, timedelta
+
+    from . import commands as cmds
+
+    grouping = bool(argv) and argv[0] == "group"
+    if grouping:
+        argv = argv[1:]
+    ap = argparse.ArgumentParser(
+        prog="agentconvos commands" + (" group" if grouping else ""),
+        description=(
+            "Find repeated commands and repeated runs of steps worth turning into an alias or a tool."
+            if grouping else
+            "Print every shell command an agent ran, in full. 'commands group' finds the repeated ones."
+        ),
+    )
+    ap.add_argument("sessions", nargs="*", metavar="ID_OR_PATH",
+                    help="Conversations to read (default: the latest one in this folder)")
+    ap.add_argument("--here", action="store_true", help="Every conversation started in this folder")
+    ap.add_argument("--days", type=int, metavar="N", help="Every conversation of the last N days, in any folder")
+    ap.add_argument("--source", choices=cmds.SUPPORTED, help="Only conversations of this agent")
+    ap.add_argument("--json", action="store_true", help="Print JSON")
+    if grouping:
+        ap.add_argument("--top", type=int, default=15, help="Rows per list (default: 15)")
+        ap.add_argument("--min", type=int, default=3, dest="min_repeats",
+                        help="Times a run of steps must happen to be listed (default: 3)")
+    args = ap.parse_args(argv)
+
+    if args.sessions:
+        paths = _resolve_args(args.sessions)
+    else:
+        from .scanner import scan_projects
+
+        after = (date.today() - timedelta(days=args.days)).isoformat() if args.days else None
+        cwd = os.path.realpath(os.getcwd())
+        found = [
+            c for p in scan_projects(source=args.source, after=after) for c in p.conversations
+            if c.source in cmds.SUPPORTED
+            and (args.days and not args.here or (c.cwd and os.path.realpath(c.cwd) == cwd))
+        ]
+        if not found:
+            print(f"No Claude, Codex or Pi conversations found for {cwd}", file=sys.stderr)
+            raise SystemExit(1)
+        found.sort(key=lambda c: c.timestamp or "")
+        paths = [c.path for c in found] if (args.here or args.days) else [found[-1].path]
+
+    commands, skipped = cmds.collect(paths)
+    for path in skipped:
+        print(f"skipped {path}: only Claude, Codex and Pi conversations are read", file=sys.stderr)
+    if grouping:
+        result = cmds.group(commands, top=args.top, min_repeats=args.min_repeats)
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            cmds.print_groups(result)
+    elif args.json:
+        print(json.dumps([c.__dict__ for c in commands], indent=2))
+    else:
+        cmds.print_commands(commands, many_sessions=len(paths) > 1)
 
 
 def _resolve_args(args: list[str], extra_dirs: list[Path] | None = None) -> list:

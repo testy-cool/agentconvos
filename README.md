@@ -170,6 +170,31 @@ hand to an agent that will edit those instructions.
 The dashboard is the separate `vx-annotate` engine. Put `vx-annotate` on PATH
 or set `AGENTCONVOS_ANNOTATE_ENGINE` to its launcher.
 
+### Find the shell commands worth shortening
+
+```bash
+agentconvos commands                  # every command of the latest conversation here, in full
+agentconvos commands <id> --json
+agentconvos commands group --here     # every conversation started in this folder
+agentconvos commands group --days 7   # every conversation of the last week
+```
+
+`commands` prints each shell command an agent ran, without the 120-character
+cut of `--detail tools`. `commands group` lists three things, each ranked:
+
+| List | What it shows | What it suggests |
+|---|---|---|
+| Programs | Each program and subcommand, such as `git log`, by the characters typed for it in total | Where the typing goes |
+| Repeated commands | Commands that match apart from their paths, numbers, IDs and quoted text | An alias or a script |
+| Repeated runs | Steps done one after another, inside one command or across consecutive ones, such as `git add → git diff → git commit → git push` | A small tool that does the whole run |
+
+A step that repeats right after itself counts once, and a run made only of
+reading commands such as `cat`, `rg` and `sed` is left out. `--min` sets how
+often a run must happen to be listed (default 3), and `--top` sets the rows per
+list. Each row names one real example with its conversation and command number,
+so `agentconvos commands <id>` shows it in full. Claude Code, Codex and Pi
+conversations are read; Agy and OpenCode are skipped.
+
 ### Preview resume or handoff
 
 ```bash
