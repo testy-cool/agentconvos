@@ -49,6 +49,9 @@ def replies(turns: list[Turn]) -> list[tuple[str, str]]:
 
 
 def _title(index: int, asked: str) -> str:
+    task = re.search(r"<task-notification>.*?<summary>(.*?)</summary>", asked, re.S)
+    if task:
+        asked = "After a background task: " + task.group(1)
     plain = re.sub(r"<[^>\n]{1,200}>", " ", asked)
     first = " ".join(plain.split())[:70] or "(no user message)"
     return f"Reply {index} · {first}"
